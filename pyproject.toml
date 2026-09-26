@@ -1,0 +1,22 @@
+[project]
+name = "polaris"
+version = "0.1.0"
+description = "Hybride zoekindex (woorden + betekenis) over je eigen kennisbank, volledig lokaal"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "onnxruntime",
+    "tokenizers",
+    "huggingface_hub",
+]
+
+[project.scripts]
+polaris = "polaris.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["polaris"]

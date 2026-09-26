@@ -1,0 +1,27 @@
+# Demo-configuratie. Paden zijn relatief aan dit bestand, dus dit werkt vanuit elke map:
+#
+#   polaris bouw --config voorbeelden/demo/polaris.toml
+#   polaris zoek --config voorbeelden/demo/polaris.toml "access point valt uit"
+
+[algemeen]
+model = "intfloat/multilingual-e5-small"   # klein en snel, genoeg voor een demo
+dim = 384
+db_pad = "demo_index.db"
+
+[[bron]]
+naam = "documenten"
+type = "markdown"
+pad = "documenten"
+
+[[bron]]
+naam = "taken"
+type = "json_lijst"
+pad = "taken.json"
+lijst_veld = "items"
+id_veld = "id"
+titel_veld = "titel"
+tekst_veld = "omschrijving"
+status_veld = "status"
+datum_veld = "bijgewerkt"
+sectie_veld = "categorie"
+uitsluit_veld = "vertrouwelijk"

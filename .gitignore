@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+dist/
+*.db
+*.db.tmp
+/polaris.toml

@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "id": "TK-1",
+      "titel": "Access point vergaderruimte valt steeds uit",
+      "categorie": "netwerk",
+      "status": "open",
+      "bijgewerkt": "2026-09-20",
+      "omschrijving": "Het access point in de vergaderruimte herstart meerdere keren per dag. Vermoeden: te weinig PoE-budget op de switch sinds er twee camera's bij zijn gekomen. Zie ook TCK-1042."
+    },
+    {
+      "id": "TK-2",
+      "titel": "Kwartaaltest herstel uitvoeren",
+      "categorie": "back-up",
+      "status": "open",
+      "bijgewerkt": "2026-09-18",
+      "omschrijving": "Eén bestand en één map terugzetten naar de testlocatie en de hersteltijd noteren."
+    },
+    {
+      "id": "TK-3",
+      "titel": "Oude firewallregels opruimen",
+      "categorie": "netwerk",
+      "status": "klaar",
+      "bijgewerkt": "2026-06-02",
+      "omschrijving": "Regels voor een oude VPN-verbinding verwijderd. Afgerond, weegt daarom lichter mee in de zoekresultaten."
+    },
+    {
+      "id": "TK-4",
+      "titel": "Contractverlenging leverancier",
+      "categorie": "inkoop",
+      "status": "open",
+      "vertrouwelijk": true,
+      "omschrijving": "Dit item heeft vertrouwelijk=true en wordt door uitsluit_veld overgeslagen."
+    }
+  ]
+}

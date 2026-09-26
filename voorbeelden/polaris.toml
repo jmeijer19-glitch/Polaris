@@ -1,0 +1,54 @@
+# Configuratiesjabloon voor Polaris, met alle opties.
+# Kopieer naar je eigen installatie als polaris.toml en pas aan.
+# Relatieve paden gelden ten opzichte van dit bestand.
+# Lees docs/beveiliging.md voordat je gevoelige bronnen toevoegt.
+
+[algemeen]
+# Embeddingmodel. e5-base (768 dimensies) is de standaard; e5-small (384) is lichter.
+# Wissel je van model, pas dan dim aan en bouw de index opnieuw.
+model = "intfloat/multilingual-e5-base"
+dim = 768
+
+# Waar de index komt. Zet hem op een plek met dezelfde toegangsbeperking als de bronnen
+# - niet in een gedeelde of gesynchroniseerde map.
+db_pad = "polaris_index.db"
+
+# Waar het model wordt opgeslagen na de eerste download (standaard ~/.cache/polaris-modellen).
+# model_cache = "~/.cache/polaris-modellen"
+
+# Voor een machine zonder internet: een map met een lokaal gekopieerd model (met daarin
+# onnx/...). Dan wordt er nooit iets gedownload. Zie `polaris model`.
+# model_pad = "/opt/modellen/multilingual-e5-base"
+
+# Wachtwoorden, tokens en sleutels maskeren vóór ze in de index komen. Laat aan.
+maskeer_geheimen = true
+
+# Patronen (reguliere expressies) voor ID's die naar een extern systeem verwijzen.
+# Standaard: ID's als AB-123. Voeg eigen formaten toe, bijvoorbeeld datumgebaseerde
+# ticketnummers als T20260101.0001:
+# verwijzingspatronen = ['\b[A-Z]{2,10}-\d{1,6}\b', 'T\d{8}\.\d{4}']
+
+
+# Eén [[bron]]-blok per map of bestand. Meerdere mag.
+
+[[bron]]
+naam = "documenten"
+type = "markdown"
+pad = "/pad/naar/een/map/met/markdown-bestanden"
+# Beveiliging: glob-patronen op het pad binnen de bron. Uitsluiten wint altijd.
+# alleen = ["handleidingen/**", "procedures/**"]
+uitsluiten = ["concepten/**", "*prive*", "*vertrouwelijk*"]
+# Losse documenten sluit je uit met `polaris: nee` in hun frontmatter.
+
+[[bron]]
+naam = "taken"
+type = "json_lijst"
+pad = "/pad/naar/taken.json"
+lijst_veld = "items"       # array-veld in het JSON-bestand; leeg als het bestand zelf een array is
+id_veld = "id"
+titel_veld = "titel"
+tekst_veld = "omschrijving"
+status_veld = "status"     # klaar/afgerond/gesloten wegen lichter mee
+datum_veld = "bijgewerkt"
+sectie_veld = "categorie"
+uitsluit_veld = "vertrouwelijk"   # items met een ware waarde hier worden overgeslagen
