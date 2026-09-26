@@ -39,9 +39,9 @@ onderbouwing van elke keuze.
  └──────────────────────────┘
         │
         ▼
- ┌──────────────────────────┐   op koppen knippen, 300-1.800 tekens
- │ chunking                 │   per stuk, JSON: één stuk per item
- └──────────────────────────┘
+ ┌──────────────────────────┐   op koppen knippen, 300-1.800 tekens per stuk,
+ │ chunking                 │   frontmatter-omschrijving als context;
+ └──────────────────────────┘   JSON: één stuk per item + één overzichtsstuk
         │
         ├──────────────► FTS5-woordindex (BM25, titel ×6, sectie ×3)
         │
@@ -49,7 +49,7 @@ onderbouwing van elke keuze.
                                  │
  vraag ──► woordlijst ──┐        │
        └─► betekenislijst ┴──► RRF-fusie ──► herrangschikking ──► top-k
-                                              (afgerond ×0,5)
+                                              (afgerond ×0,5, nieuwste iets omhoog)
 ```
 
 Alles zit in één SQLite-bestand. Bij elke bouw wordt een nieuw bestand gemaakt en pas
@@ -70,7 +70,7 @@ gemaskeerd, `salarisoverzicht.md` wordt overgeslagen via een opt-out, en een taa
 
 ## Installeren
 
-Vereist Python 3.11 of nieuwer.
+Vereist Python 3.10 of nieuwer.
 
 ```bash
 pip install -r requirements.txt   # alleen de afhankelijkheden
@@ -107,10 +107,26 @@ en pas de bronnen aan. Relatieve paden gelden ten opzichte van het configbestand
 Twee brontypen:
 
 - **`markdown`** — een map met `.md`-bestanden, recursief, geknipt op koppen
-  (`##` t/m `####`).
+  (`##` t/m `####`). Frontmatter wordt gebruikt: `description` gaat als context vóór
+  elk stuk, `status`, `title` en `date` worden overgenomen, `polaris: nee` slaat het
+  bestand over.
 - **`json_lijst`** — een JSON-bestand met een array van items (taken, kaarten, tickets).
   Veldnamen zijn instelbaar (`id_veld`, `titel_veld`, `tekst_veld`, `status_veld`,
-  `datum_veld`, `sectie_veld`), zodat het bij elk systeem past.
+  `datum_veld`, `sectie_veld`), zodat het bij elk systeem past. Met `alle_velden = true`
+  gaat elk veld mee als `sleutel: waarde`. Per lijst komt er één overzichtsstuk bij met
+  alle namen (`overzicht = false` zet dat uit).
+
+Andere bronnen (commit-berichten, een live inventaris, een database) lever je vanuit je
+eigen programma aan met `extra_stukken` — zie "Vanuit een ander programma".
+
+Zoekgedrag in `[algemeen]`:
+
+| Instelling | Standaard | Wat het doet |
+|---|---|---|
+| `actualiteit_bonus`, `actualiteit_dagen` | 0,25 en 730 | hoeveel een recent stuk voorgaat op een even goed ouder stuk; 0 = uit |
+| `stemmer` | `"grof"` | `"nl"` = Nederlandse Snowball-stemmer (`pip install snowballstemmer`, index herbouwen), `"uit"` = alleen exacte woorden |
+| `snippets`, `snippet_markering` | uit, `["[", "]"]` | per treffer een fragment rond de gevonden woorden |
+| `threads` | 0 = alle kernen | CPU-threads voor het model |
 
 ## Beveiliging
 
@@ -138,8 +154,9 @@ afvangt.
 | Opdracht | Wat het doet |
 |---|---|
 | `polaris bouw --config polaris.toml` | Index (her)bouwen |
-| `polaris zoek --config polaris.toml "vraag"` | Zoeken; `-k 5` voor minder resultaten, `--json` voor machine-uitvoer |
-| `polaris info --config polaris.toml` | Model, bouwmoment, aantal stukken, versie van de index |
+| `polaris zoek --config polaris.toml "vraag"` | Zoeken; `-k 5` voor minder resultaten, `--bron taken` voor één bron, `--json` voor machine-uitvoer |
+| `polaris info --config polaris.toml` | Model, bouwmoment, aantal stukken per bron, versie en schema van de index |
+| `polaris eval --config polaris.toml vragen.json` | Meetlat: staat het verwachte resultaat in de top-k? Geeft plek per vraag en MRR; `-k`, `--json` |
 | `polaris model --config polaris.toml` | Model vooraf ophalen (voor offline gebruik) |
 | `polaris versie` | Versienummer van Polaris |
 | `polaris bijwerken` | Nieuwste versie ophalen via git |
@@ -153,19 +170,69 @@ polaris zoek --config polaris.toml --json -k 5 "vraag"
 ```
 
 geeft een JSON-lijst met per treffer `bron`, `pad`, `titel`, `sectie`, `datum`,
-`status`, `tekst`, `verwijzingen` en `score`. Of rechtstreeks in Python:
+`status`, `tekst`, `verwijzingen` en `score`. Elke CLI-aanroep laadt wel het model
+opnieuw (1-3 s). In een langlopend proces gebruik je daarom de `Zoeker`, die model en
+vectormatrix warm houdt:
 
 ```python
 from polaris import config, index
 cfg = config.laad("polaris.toml")
-for treffer in index.zoek(cfg, "access point krijgt geen stroom", k=5):
+zoeker = index.Zoeker(cfg)                 # één keer aanmaken, daarna hergebruiken
+for treffer in zoeker.zoek("access point krijgt geen stroom", k=5, bron=None):
     print(treffer["titel"], treffer["score"])
 ```
+
+`index.zoek(cfg, vraag)` doet hetzelfde en houdt zelf één Zoeker per index in leven.
+De matrix wordt automatisch opnieuw ingelezen zodra het indexbestand door een bouw is
+vervangen; een webserver hoeft dus niet te herstarten na een herbouw.
+
+**Eigen bronnen aanleveren.** Heeft je programma kennis die niet in markdown of een
+JSON-lijst zit (commit-berichten, een live inventaris, rijen uit een database), geef die
+dan als stukken mee aan de bouw. `bron`, `pad` en `tekst` zijn verplicht; `titel`,
+`sectie`, `datum`, `status` en `id` zijn optioneel. Ze krijgen dezelfde maskering,
+ontdubbeling en embedding als de eigen bronnen:
+
+```python
+extra = [{"bron": "git", "pad": "commit 1a2b3c", "titel": "Firewall aangescherpt",
+          "datum": "2026-09-01", "tekst": "Poort 22 alleen nog vanaf het beheernetwerk."}]
+index.bouw(cfg, extra_stukken=extra)
+```
+
+Voor tests of een andere embedder: `bouw(cfg, embedder=...)` en `Zoeker(cfg, embedder=...)`
+accepteren elk object met `passages(teksten)` en `query(tekst)` die genormaliseerde
+vectoren teruggeven. De tests gebruiken zo een nep-embedder zonder model.
 
 Het veld `verwijzingen` bevat ID's of ticketnummers die in de tekst genoemd worden
 (patronen instelbaar via `verwijzingspatronen`). Het is een signaal voor het aanroepende
 programma: dit stuk gaat over iets in een extern systeem, en voor de actuele stand is
 het beter daar vers te kijken dan de index te vertrouwen.
+
+## Meten: de evaluatieset
+
+Elke wijziging aan chunking, gewichten, stemmer of model is pas een verbetering als de
+cijfers dat zeggen. Maak daarom een lijst vragen met wat er in de top-k moet staan:
+
+```json
+[
+  {"vraag": "access point krijgt geen stroom", "verwacht": "taken\\.json#TK-1"},
+  {"vraag": "hoe zet ik een back-up terug",   "verwacht": "back-up-procedure", "bron": "documenten"}
+]
+```
+
+`verwacht` is een reguliere expressie op het pad of de titel van een treffer. Dan:
+
+```
+polaris eval --config polaris.toml vragen.json
+ 1  access point krijgt geen stroom
+ 2  hoe zet ik een back-up terug
+gevonden in top-8: 2/2   MRR 0.750   (0.3 s)
+```
+
+MRR is het gemiddelde van 1/plek (0 als niet gevonden): 1,0 betekent alles bovenaan.
+Draai dit vóór en na elke wijziging. Tien tot twintig vragen die je zelf ooit hebt
+gesteld zijn genoeg om een verslechtering te zien; neem er een paar bij waarin het
+kernwoord níet letterlijk in de bron staat, want daar zit het verschil tussen woorden
+en betekenis. Zie `voorbeelden/demo/eval.json`.
 
 ## Versies en bijwerken
 
@@ -192,29 +259,36 @@ gekomen, en `polaris bouw` als de CHANGELOG zegt dat de indexstructuur is verand
 
 ## Richting voor volgende versies
 
-- **Warme zoekservice.** Nu laadt elke `polaris zoek` het model opnieuw (2-3 seconden).
-  Een klein, altijd-aan proces dat het model in het geheugen houdt, maakt een zoekactie
-  ~0,1 seconde — nodig voor snel zoeken vanaf een telefoon of door meerdere gebruikers.
-  Zo'n service moet authenticatie krijgen; zie `docs/beveiliging.md`.
+- **Warme zoekservice.** De `Zoeker` houdt sinds 0.2.0 model en matrix warm binnen één
+  proces; wat ontbreekt is een klein, altijd-aan proces met een netwerk-endpoint, zodat
+  ook de CLI en andere machines daarvan profiteren (zoekactie ~0,1 s). Zo'n service
+  moet authenticatie krijgen; zie `docs/beveiliging.md`.
 - **Database als brontype.** Rechtstreeks uit een database lezen in plaats van uit een
   export, met een expliciete lijst van tabellen en kolommen die mogen — nooit "alles".
 - **Leerlus.** Zoekopdrachten zonder goede treffer loggen en periodiek gericht
   trefwoorden aan de gemiste stukken toevoegen (document-expansie).
-- **Evaluatieset.** Een vaste set vragen met verwacht resultaat, zodat elke wijziging
-  meetbaar beter of slechter is.
+- **Reranker.** Een tweede, zwaarder model dat alleen de top-30 herbeoordeelt door vraag
+  en stuk sámen te lezen; als optie, want het kost op een kleine CPU 0,3 tot 1 s per
+  vraag. Alleen als de evaluatieset laat zien dat de fusie tekortschiet.
+
+Bewust **niet** op de lijst: een vectordatabase, een groter embeddingmodel, alles in
+één prompt, of een taalmodel dat trefwoorden bij stukken verzint. Bij duizenden tot
+tienduizenden stukken op gewone hardware leveren die complexiteit zonder meetbare
+winst, en het laatste haalt een LLM in een pijplijn die daar juist vrij van is.
 
 ## Bestanden
 
 | Bestand | Inhoud |
 |---|---|
-| `polaris/index.py` | Chunking, embedder, bouwen, zoeken |
+| `polaris/index.py` | Chunking, frontmatter, embedder, bouwen (met lock en cache), `Zoeker` |
 | `polaris/beveiliging.py` | Selectie, opt-out, maskeren |
 | `polaris/config.py` | Inlezen van `polaris.toml` |
+| `polaris/eval.py` | Evaluatieset draaien, MRR |
 | `polaris/cli.py` | Opdrachtregel |
 | `polaris/update.py` | Bijwerken via git |
 | `tests/` | Tests zonder model of netwerk |
 | `voorbeelden/polaris.toml` | Configuratiesjabloon met alle opties |
-| `voorbeelden/demo/` | Kleine kennisbank om mee te proberen |
+| `voorbeelden/demo/` | Kleine kennisbank om mee te proberen, met `eval.json` |
 | `docs/techniek.md` | Onderbouwing van elke technische keuze |
 | `docs/beveiliging.md` | Waar indexen horen, risico's, aanbevelingen |
 | `pakket.py` | Zip bouwen uit een release-tag |

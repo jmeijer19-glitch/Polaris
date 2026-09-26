@@ -23,6 +23,23 @@ db_pad = "polaris_index.db"
 # Wachtwoorden, tokens en sleutels maskeren vóór ze in de index komen. Laat aan.
 maskeer_geheimen = true
 
+# Actualiteit: bij twee even goede treffers wint de nieuwste. Tot 25% van een eerste
+# plek voor een stuk van vandaag, lineair naar 0 na 730 dagen. 0 = uit (bijvoorbeeld
+# als je bronnen geen betrouwbare datum hebben).
+actualiteit_bonus = 0.25
+actualiteit_dagen = 730
+
+# CPU-threads voor het model. 0 = alle kernen.
+threads = 0
+
+# Woordstammen bij het zoeken: "grof" (geen afhankelijkheid), "nl" (Nederlandse
+# Snowball-stemmer: pip install snowballstemmer, daarna index herbouwen) of "uit".
+stemmer = "grof"
+
+# Per treffer een fragment rond de gevonden woorden, met markering eromheen.
+snippets = false
+# snippet_markering = ["[", "]"]
+
 # Patronen (reguliere expressies) voor ID's die naar een extern systeem verwijzen.
 # Standaard: ID's als AB-123. Voeg eigen formaten toe, bijvoorbeeld datumgebaseerde
 # ticketnummers als T20260101.0001:
@@ -52,3 +69,5 @@ status_veld = "status"     # klaar/afgerond/gesloten wegen lichter mee
 datum_veld = "bijgewerkt"
 sectie_veld = "categorie"
 uitsluit_veld = "vertrouwelijk"   # items met een ware waarde hier worden overgeslagen
+# alle_velden = true              # elk veld als "sleutel: waarde" i.p.v. alleen tekst_veld
+# overzicht = false               # geen overzichtsstuk met alle namen van deze lijst

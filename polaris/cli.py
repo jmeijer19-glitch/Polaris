@@ -2,8 +2,9 @@
 """Opdrachtregel voor Polaris.
 
     polaris bouw      --config polaris.toml         index (her)bouwen
-    polaris zoek      --config polaris.toml "vraag"  hybride zoekopdracht
+    polaris zoek      --config polaris.toml "vraag"  hybride zoekopdracht (-k, --bron, --json)
     polaris info      --config polaris.toml         wat zit er in de index
+    polaris eval      --config polaris.toml vragen.json   meetlat: staat het verwachte in de top-k?
     polaris model     --config polaris.toml         model vooraf ophalen (offline gebruik)
     polaris versie                                  versienummer
     polaris bijwerken                               nieuwste versie ophalen via git
@@ -15,6 +16,7 @@ import os
 import sys
 
 from . import config as configmod
+from . import eval as evalmod
 from . import index as indexmod
 from . import update as updatemod
 from . import versie as versie_fn
@@ -49,7 +51,14 @@ def main(argv=None):
     p_zoek.add_argument("-k", type=int, default=8, help="aantal resultaten (standaard 8)")
     p_zoek.add_argument("--json", action="store_true",
                         help="resultaten als JSON, voor gebruik door een ander programma")
+    p_zoek.add_argument("--bron", default=None, help="alleen in deze bron zoeken")
     p_zoek.add_argument("vraag", nargs="+")
+
+    p_eval = sub.add_parser("eval", help="evaluatieset draaien: vragen met verwacht resultaat")
+    p_eval.add_argument("--config", default="polaris.toml")
+    p_eval.add_argument("-k", type=int, default=8, help="binnen hoeveel treffers (standaard 8)")
+    p_eval.add_argument("--json", action="store_true")
+    p_eval.add_argument("vragen", help="JSON-bestand met [{vraag, verwacht, bron?}, ...]")
 
     sub.add_parser("versie", help="toon het versienummer")
     sub.add_parser("bijwerken", help="haal de nieuwste versie op via git pull")
@@ -66,7 +75,11 @@ def main(argv=None):
     cfg = _laad_config(args.config)
 
     if args.cmd == "bouw":
-        indexmod.bouw(cfg)
+        try:
+            indexmod.bouw(cfg)
+        except indexmod.BouwBezig as e:
+            print(str(e))
+            sys.exit(2)
 
     elif args.cmd == "model":
         emb = indexmod.Embedder(cfg)
@@ -82,6 +95,20 @@ def main(argv=None):
         for k, v in sorted(indexmod.meta(cfg.db_pad).items()):
             print("%-10s %s" % (k, v))
         print("%-10s %s" % ("bestand", cfg.db_pad))
+        for bron, n in indexmod.per_bron(cfg.db_pad).items():
+            print("%-10s %s: %d stukken" % ("bron", bron, n))
+
+    elif args.cmd == "eval":
+        if not os.path.exists(cfg.db_pad):
+            print("geen index op %s - draai eerst: polaris bouw" % cfg.db_pad)
+            sys.exit(1)
+        try:
+            vragen = evalmod.laad_vragen(args.vragen)
+            uit = evalmod.evalueer(cfg, vragen, k=args.k)
+        except (ValueError, OSError) as e:
+            print(str(e))
+            sys.exit(1)
+        print(json.dumps(uit, ensure_ascii=False, indent=1) if args.json else evalmod.rapport(uit))
 
     elif args.cmd == "zoek":
         if not os.path.exists(cfg.db_pad):
@@ -90,7 +117,7 @@ def main(argv=None):
             sys.exit(1)
         vraag = " ".join(args.vraag)
         try:
-            resultaten = indexmod.zoek(cfg, vraag, k=args.k)
+            resultaten = indexmod.zoek(cfg, vraag, k=args.k, bron=args.bron)
         except ValueError as e:
             print(str(e))
             sys.exit(1)
@@ -101,7 +128,7 @@ def main(argv=None):
             print("niets gevonden")
         for i, r in enumerate(resultaten, 1):
             print("%d. [%s] %s › %s" % (i, r["bron"], r["titel"], r["sectie"]))
-            print("   %s" % r["tekst"][:220].replace("\n", " "))
+            print("   %s" % (r.get("fragment") or r["tekst"][:220].replace("\n", " ")))
             if r.get("verwijzingen"):
                 print("   live-referentie(s): %s - overweeg dit vers op te halen "
                       "in plaats van de index te vertrouwen" % r["verwijzingen"])

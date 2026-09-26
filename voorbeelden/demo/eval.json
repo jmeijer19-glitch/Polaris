@@ -1,0 +1,23 @@
+[
+ {
+  "vraag": "access point krijgt geen stroom",
+  "verwacht": "taken\\.json#TK-1"
+ },
+ {
+  "vraag": "hoe zet ik een back-up terug na een storing",
+  "verwacht": "back-up-procedure"
+ },
+ {
+  "vraag": "welke taken staan er open",
+  "verwacht": "#overzicht",
+  "bron": "taken"
+ },
+ {
+  "vraag": "in welk vlan zitten de printers",
+  "verwacht": "netwerk-basis"
+ },
+ {
+  "vraag": "wachtwoord van de beheerder",
+  "verwacht": "netwerk-basis"
+ }
+]

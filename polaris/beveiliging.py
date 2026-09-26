@@ -22,11 +22,12 @@ MASKER = "[verborgen]"
 
 # Sleutel-waarde-paren waarvan de waarde geheim is: "wachtwoord: abc123",
 # "password=abc", "api_key = xyz". De sleutelnaam blijft staan, zodat je nog kunt
-# vinden dát er een wachtwoord gedocumenteerd is - alleen niet welk.
+# vinden dát er een wachtwoord gedocumenteerd is - alleen niet welk. Markdown-opmaak
+# tussen sleutel en waarde ("**Wachtwoord:** `abc`") telt niet als waarde.
 _SLEUTELWAARDE = re.compile(
     r"(?i)\b(wachtwoord|password|passwd|pwd|pincode|secret|geheim|token|"
     r"api[_\- ]?key|apikey|client[_\- ]?secret|access[_\- ]?key)"
-    r"(\s*[:=]\s*)(\S+)")
+    r"(\s*[*_`]*\s*[:=]\s*[*_`\"']*)([^\s*_`\"']+)")
 
 _PRIVATE_KEY = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")
@@ -39,6 +40,11 @@ _BEKENDE_TOKENS = re.compile(
 # Lange willekeurig ogende reeksen (hoofdletters, kleine letters en cijfers door elkaar,
 # minstens 32 tekens) - typisch een sleutel of token zonder herkenbaar voorvoegsel.
 _LANGE_REEKS = re.compile(r"\b[A-Za-z0-9+/_\-]{32,}={0,2}")
+
+# App-wachtwoorden in groepen: vier of meer blokken van vier of meer tekens, met
+# streepjes ("abcd1-Efgh2-..."). Korter dan 32 tekens en daardoor door de vorige regel
+# gemist; een UUID (alleen kleine letters en cijfers) blijft staan.
+_GROEPEN_REEKS = re.compile(r"\b(?:[A-Za-z0-9]{4,}-){3,}[A-Za-z0-9]{4,}\b")
 
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*(\n|\Z)", re.S)
 _OPTOUT = re.compile(r"(?im)^\s*(polaris|index)\s*:\s*(nee|no|false|uit|off)\s*$")
@@ -73,6 +79,7 @@ def maskeer(tekst):
     tekst = _SLEUTELWAARDE.sub(_vervang_waarde, tekst)
     tekst = _BEKENDE_TOKENS.sub(_vervang_heel, tekst)
     tekst = _LANGE_REEKS.sub(_vervang_reeks, tekst)
+    tekst = _GROEPEN_REEKS.sub(_vervang_reeks, tekst)
     return tekst, teller[0]
 
 

@@ -1,15 +1,19 @@
 [project]
 name = "polaris"
-version = "0.1.0"
+version = "0.3.0"
 description = "Hybride zoekindex (woorden + betekenis) over je eigen kennisbank, volledig lokaal"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "onnxruntime",
     "tokenizers",
     "huggingface_hub",
+    "tomli; python_version < '3.11'",
 ]
+
+[project.optional-dependencies]
+nl = ["snowballstemmer"]   # voor stemmer = "nl" in de config
 
 [project.scripts]
 polaris = "polaris.cli:main"

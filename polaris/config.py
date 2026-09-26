@@ -10,7 +10,11 @@ Zo blijft een installatie werken als je hem verplaatst of vanuit een andere map 
 """
 import os
 import re
-import tomllib
+
+try:
+    import tomllib
+except ImportError:                       # Python 3.10: tomli is dezelfde API
+    import tomli as tomllib
 
 STANDAARD_MODEL = "intfloat/multilingual-e5-base"
 STANDAARD_MODELBESTAND = "onnx/model_qint8_avx512_vnni.onnx"
@@ -65,6 +69,12 @@ class BronConfig(object):
         # Items waarvan dit veld een ware waarde heeft (true, "ja", 1) worden overgeslagen,
         # bijvoorbeeld een veld "vertrouwelijk".
         self.uitsluit_veld = ruw.get("uitsluit_veld", "")
+        # `alle_velden = true`: niet alleen `tekst_veld`, maar elk veld van het item als
+        # `sleutel: waarde`-regel. Voor lijsten waar de kennis over meer velden verspreid
+        # zit (prijs, leverancier, opzegdatum, ...).
+        self.alle_velden = bool(ruw.get("alle_velden", False))
+        # Per lijst één extra overzichtsstuk met alle namen, voor "welke ... zijn er"-vragen.
+        self.overzicht = bool(ruw.get("overzicht", True))
 
 
 class Config(object):
@@ -84,6 +94,29 @@ class Config(object):
         # Beveiliging: wachtwoorden, tokens en sleutels maskeren vóór ze in de index
         # komen. Staat standaard aan; uitzetten moet een bewuste keuze zijn.
         self.maskeer_geheimen = bool(alg.get("maskeer_geheimen", True))
+
+        # Actualiteit: tot `actualiteit_bonus` × (de score van een eerste plek) extra voor
+        # een stuk van vandaag, lineair aflopend naar 0 na `actualiteit_dagen`. 0 = uit.
+        self.actualiteit_bonus = float(alg.get("actualiteit_bonus", 0.25))
+        self.actualiteit_dagen = int(alg.get("actualiteit_dagen", 730))
+
+        # Aantal CPU-threads voor het model; 0 = alle kernen.
+        self.threads = int(alg.get("threads", 0))
+
+        # Woordstammen bij het zoeken: "grof" (woorden van 7+ tekens verliezen 3 letters en
+        # krijgen een wildcard; geen afhankelijkheid), "nl" (Snowball-stemmer voor Nederlands,
+        # vraagt `pip install snowballstemmer` en een herbouw van de index) of "uit".
+        self.stemmer = str(alg.get("stemmer", "grof")).lower()
+        if self.stemmer not in ("grof", "nl", "uit"):
+            raise ValueError("stemmer moet 'grof', 'nl' of 'uit' zijn, niet %r" % self.stemmer)
+
+        # Snippets: per treffer een fragment rond de gevonden woorden, met de markering
+        # eromheen (standaard [ en ]). Kost niets extra's; SQLite maakt ze.
+        self.snippets = bool(alg.get("snippets", False))
+        markering = alg.get("snippet_markering", ["[", "]"])
+        if not (isinstance(markering, list) and len(markering) == 2):
+            raise ValueError("snippet_markering moet een lijst van twee tekens zijn")
+        self.snippet_markering = (str(markering[0]), str(markering[1]))
 
         patronen = alg.get("verwijzingspatronen", STANDAARD_VERWIJZINGSPATRONEN)
         try:

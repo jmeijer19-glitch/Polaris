@@ -4,3 +4,5 @@ dist/
 *.db
 *.db.tmp
 /polaris.toml
+*.egg-info/
+.venv/

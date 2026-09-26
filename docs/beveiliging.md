@@ -23,7 +23,7 @@ gaat, kan ook niet uitlekken.
 | Selectie per bron | `alleen` en `uitsluiten` (glob-patronen op het pad binnen de bron). Uitsluiten wint altijd. |
 | Opt-out per document | Markdown met `polaris: nee` (of `index: false`) in de frontmatter wordt overgeslagen. |
 | Opt-out per item | JSON-items met een ware waarde in `uitsluit_veld` worden overgeslagen. |
-| Maskeren (standaard aan) | Waarden achter `wachtwoord:`, `password=`, `token:`, `api_key` e.d., private keys, bekende tokenvormen (GitHub, OpenAI, Slack, AWS) en lange willekeurige reeksen worden `[verborgen]` — vóór opslag én vóór het berekenen van de vector. |
+| Maskeren (standaard aan) | Waarden achter `wachtwoord:`, `password=`, `token:`, `api_key` e.d. (ook door markdown-opmaak heen), private keys, bekende tokenvormen (GitHub, OpenAI, Slack, AWS), lange willekeurige reeksen en app-wachtwoorden in groepen (`Abcd1-Efgh2-…`) worden `[verborgen]` — vóór opslag én vóór het berekenen van de vector. Geldt ook voor stukken die een programma zelf aanlevert. |
 | Verslag na elke bouw | Aantal uitgesloten bestanden, opt-outs en maskeringen. Controleer dat getal: nul maskeringen in een kennisbank vol beheerdocumentatie is verdacht. |
 | Bestandsrechten | Op Linux/macOS krijgt de index `600` (alleen de eigenaar). Op Windows gelden de NTFS-rechten van de map. |
 | Lokaal model | Geen tekst naar een externe dienst, ook niet bij het zoeken. |
@@ -101,4 +101,7 @@ een opdracht lijkt.
       gesynchroniseerd?
 - [ ] Na de eerste bouw het beveiligingsverslag bekeken, en een paar proefzoekacties
       gedaan op woorden als "wachtwoord", "salaris", "contract"?
+- [ ] Levert je programma eigen stukken aan (`extra_stukken`)? Dan gelden `alleen`,
+      `uitsluiten` en opt-out níet: die selectie moet je programma zelf doen vóór het
+      aanleveren. Maskering gebeurt wel.
 - [ ] Voor meerdere doelgroepen: aparte configs en aparte indexen?

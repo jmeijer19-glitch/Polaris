@@ -2,3 +2,4 @@ numpy
 onnxruntime
 tokenizers
 huggingface_hub
+tomli; python_version < '3.11'
