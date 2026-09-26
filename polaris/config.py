@@ -124,9 +124,9 @@ class Config(object):
         except re.error as e:
             raise ValueError("ongeldig verwijzingspatroon in de config: %s" % e)
 
+        # Geen [[bron]] mag: een aanroepend programma kan alle stukken zelf aanleveren
+        # (extra_stukken). De bouw weigert pas als er dan óók niets aangeleverd is.
         self.bronnen = [BronConfig(b, basis) for b in ruw.get("bron", [])]
-        if not self.bronnen:
-            raise ValueError("geen [[bron]] secties in de config - er is niets om te indexeren")
 
 
 def laad(pad):

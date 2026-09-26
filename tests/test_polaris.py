@@ -394,13 +394,15 @@ class TestConfig(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _config(d, extra_algemeen='stemmer = "engels"\n')
 
-    def test_zonder_bronnen_is_fout(self):
+    def test_zonder_bronnen_en_zonder_stukken_is_de_bouw_fout(self):
         with tempfile.TemporaryDirectory() as d:
-            pad = os.path.join(d, "polaris.toml")
-            with open(pad, "w", encoding="utf-8") as f:
-                f.write('[algemeen]\n')
+            cfg = _config(d, bronnen="")
+            self.assertEqual(cfg.bronnen, [])
             with self.assertRaises(ValueError):
-                config.laad(pad)
+                index.bouw(cfg, verbose=False, embedder=NepEmbedder())
+            n = index.bouw(cfg, verbose=False, embedder=NepEmbedder(),
+                           extra_stukken=[{"bron": "x", "pad": "y", "tekst": "alleen aangeleverd"}])
+            self.assertEqual(n, 1)
 
 
 if __name__ == "__main__":

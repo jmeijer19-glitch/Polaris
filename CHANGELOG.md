@@ -5,6 +5,12 @@ Alle betekenisvolle wijzigingen per versie, nieuwste bovenaan. Versienummers vol
 getal betekent nieuwe functionaliteit, van het laatste getal een reparatie. Staat er
 **index opnieuw bouwen** bij een versie, draai dan na het bijwerken `polaris bouw`.
 
+## 0.3.1 — 2026-09-26
+
+- Een config zonder `[[bron]]` is toegestaan: een aanroepend programma dat álle stukken
+  zelf aanlevert (`extra_stukken`) hoeft geen lege map meer op te geven. De bouw weigert
+  alleen als er dan ook niets is aangeleverd.
+
 ## 0.3.0 — 2026-09-26 — **index opnieuw bouwen**
 
 Deze versie gaat over meten en over twee opties die je aanzet als je ze nodig hebt.

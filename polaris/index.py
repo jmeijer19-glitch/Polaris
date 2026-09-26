@@ -591,6 +591,8 @@ def bouw(config, verbose=True, embedder=None, extra_stukken=None):
 def _bouw(config, verbose, embedder, extra_stukken):
     telling = Telling()
     stukken = verzamel_stukken(config, telling, extra_stukken)
+    if not stukken:
+        raise ValueError("niets om te indexeren: geen [[bron]] in de config en geen extra_stukken")
     if verbose:
         print("verzameld: %d stukken" % len(stukken))
         print("beveiliging: %d bestand(en) uitgesloten, %d opt-out, %d geheim(en) gemaskeerd"

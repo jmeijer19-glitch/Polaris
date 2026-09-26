@@ -1,6 +1,6 @@
 [project]
 name = "polaris"
-version = "0.3.0"
+version = "0.3.1"
 description = "Hybride zoekindex (woorden + betekenis) over je eigen kennisbank, volledig lokaal"
 readme = "README.md"
 requires-python = ">=3.10"
