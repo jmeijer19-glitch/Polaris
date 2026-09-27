@@ -292,3 +292,11 @@ winst, en het laatste haalt een LLM in een pijplijn die daar juist vrij van is.
 | `docs/techniek.md` | Onderbouwing van elke technische keuze |
 | `docs/beveiliging.md` | Waar indexen horen, risico's, aanbevelingen |
 | `pakket.py` | Zip bouwen uit een release-tag |
+| `LICENSE`, `NOTICE` | Apache License 2.0 |
+
+## Licentie
+
+Polaris valt onder de [Apache License 2.0](LICENSE). Je mag het gebruiken, aanpassen en
+verspreiden, ook commercieel, zolang je de licentie en `NOTICE` meelevert en aangeeft
+welke bestanden je hebt gewijzigd. De gebruikte embedding-modellen hebben hun eigen
+licentie (MIT, zie [Installeren](#installeren)).

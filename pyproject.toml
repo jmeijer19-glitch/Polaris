@@ -3,6 +3,8 @@ name = "polaris"
 version = "0.3.1"
 description = "Hybride zoekindex (woorden + betekenis) over je eigen kennisbank, volledig lokaal"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
@@ -19,7 +21,7 @@ nl = ["snowballstemmer"]   # voor stemmer = "nl" in de config
 polaris = "polaris.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
