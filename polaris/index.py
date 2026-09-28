@@ -129,7 +129,7 @@ def namen(vraag):
         afkorting = len(letters) >= 2 and all(c.isupper() for c in letters)
         naam = (len(t) >= 2 and t.lower() not in STOPWOORDEN and t.lower() not in VRAAGWOORDEN
                 and (afkorting or (t[0].isupper() and not zinsbegin)))
-        # "Vattenfall-contract": alleen "Vattenfall" is de naam. Een samenstelling houdt de
+        # "Noordwind-contract": alleen "Noordwind" is de naam. Een samenstelling houdt de
         # delen met een hoofdletter of een cijfer ("TK-1" blijft heel).
         delen = [d for d in re.split(r"[-'’]", t) if d and (d[0].isupper() or d.isdigit())]
         naamwoorden = woorden(" ".join(delen))

@@ -5,6 +5,12 @@ Alle betekenisvolle wijzigingen per versie, nieuwste bovenaan. Versienummers vol
 getal betekent nieuwe functionaliteit, van het laatste getal een reparatie. Staat er
 **index opnieuw bouwen** bij een versie, draai dan na het bijwerken `polaris bouw`.
 
+## 0.4.1 — 2026-09-28
+
+- Alleen documentatie, een commentaar en een test: voorbeelden uit een echte kennisbank
+  vervangen door verzonnen namen. Geen functionele wijziging; wie `polaris ververs`
+  gebruikt, krijgt door de nieuwe versie eenmalig een volledige bouw.
+
 ## 0.4.0 — 2026-09-28 — **index opnieuw bouwen** (of `polaris ververs`, dat doet het vanzelf)
 
 Aanleiding: in een kennisbank van ~1.100 stukken gaf een vraag een verkeerd antwoord

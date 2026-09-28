@@ -382,7 +382,7 @@ class TestNamen(unittest.TestCase):
         self.assertEqual(index.namen("Status van TK-1"), [["tk", "1"]])
 
     def test_zinsbegin_vraagwoord_en_samenstelling(self):
-        self.assertEqual(index.namen("Wanneer loopt het Vattenfall-contract af?"), [["vattenfall"]])
+        self.assertEqual(index.namen("Wanneer loopt het Noordwind-contract af?"), [["noordwind"]])
         self.assertEqual(index.namen("access point krijgt geen stroom"), [])
         self.assertEqual(index.namen("Karin is weg. Wie neemt het over?"), [])
 

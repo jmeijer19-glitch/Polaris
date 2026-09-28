@@ -154,8 +154,8 @@ op plek 1, met de hele vraag op plek 12.
 of een woord helemaal in hoofdletters (een afkorting). Aaneengesloten namenwoorden zijn
 één naam ("Bakkerij Vermeulen"). Vraagwoorden en stopwoorden tellen niet. Van een
 samenstelling tellen alleen de delen met een hoofdletter of cijfer: in
-"Vattenfall-contract" is "Vattenfall" de naam, "TK-1" blijft heel. Dat laatste scheelde
-meetbaar: met "vattenfall contract" als frase zakte het contract-document van plek 2 naar
+"Noordwind-contract" is "Noordwind" de naam, "TK-1" blijft heel. Dat laatste scheelde
+meetbaar: met "noordwind contract" als frase zakte het contract-document van plek 2 naar
 plek 4.
 
 **Zoeken.** Per naam een woordlijst met de naam als exacte frase op titel, sectie en
@@ -167,7 +167,7 @@ schakelt dit uit, net als de betekenislijst.
 **Het gewicht** (standaard 0,7) is gemeten op een kennisbank van 4.414 stukken met een
 evaluatieset van 20 vragen: zonder namen MRR 0,67, met 0,5 → 0,68, met 0,7 en 1,0 → 0,71,
 met 1,5 → 0,61 en een vraag minder gevonden. Bij te veel gewicht duwt een naam die in
-veel stukken staat ("Ring") het goede stuk weg. Een vraag in kleine letters heeft geen
+veel stukken staat het goede stuk weg. Een vraag in kleine letters heeft geen
 namen en zoekt precies zoals vóór 0.4.0.
 
 ## 6. Herrangschikking en cache
@@ -247,7 +247,7 @@ wordt het opnieuw gelezen. Kan verversen niet op de bestaande index voortbouwen 
 index, een oudere indexstructuur, of een andere config of Polaris-versie volgens de
 vingerafdruk in `meta`), dan wordt het een volledige bouw.
 
-**Gemeten** op 4.414 aangeleverde stukken (N100, 2 threads): volledige bouw 3,1 s,
+**Gemeten** op 4.414 aangeleverde stukken (zuinige mini-pc, 2 threads): volledige bouw 3,1 s,
 verversen zonder wijzigingen 0,6 s, met één gewijzigd stuk 1,6 s, waarvan ~0,9 s het
 koud laden van het model. In een proces dat het model warm houdt, is dat ruim onder de
 seconde.
