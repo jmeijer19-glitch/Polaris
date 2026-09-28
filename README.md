@@ -206,7 +206,8 @@ polaris zoek --config polaris.toml --json -k 5 "vraag"
 ```
 
 geeft een JSON-lijst met per treffer `id`, `bron`, `pad`, `titel`, `sectie`, `datum`,
-`status`, `tekst`, `verwijzingen`, `volgnr` (plek in het document) en `score`, en waar
+`status`, `tekst`, `verwijzingen`, `volgnr` (plek in het document), `score` en `signalen`
+(welke lijsten het stuk vonden: `woorden`, `betekenis`, `namen`), en waar
 van toepassing `ook_in_dit_document`: een lijst met `id`, `sectie`, `volgnr` en `tekst`
 van de andere stukken van dat document die erbij horen. Elke CLI-aanroep laadt wel het model
 opnieuw (1-3 s). In een langlopend proces gebruik je daarom de `Zoeker`, die model en
@@ -245,6 +246,25 @@ lijst: Polaris vergelijkt per stuk en schrijft alleen wat nieuw, gewijzigd of ve
 is. Het resultaat is precies dezelfde index als een volledige bouw. Kan verversen niet
 (nog geen index, een oudere indexstructuur, een andere config of Polaris-versie), dan
 wordt het vanzelf een volledige bouw; de teruggegeven dict zegt dat met `volledig`.
+
+**Meerdere indexen samen doorzoeken.** Heb je naast je Polaris-index nog een zoekbare
+verzameling die je niet wilt of mag kopiëren (een documentarchief, een versleuteld
+berichtenarchief), zoek die dan apart en voeg de uitkomsten samen:
+
+```python
+eigen = zoeker.zoek(vraag, k=8)
+docs = mijn_archief_zoek(vraag)            # treffers met `score` en `signalen`
+alles = index.samenvoegen(eigen, {"archief": docs}, max_per_bron=2)[:8 + 2]
+```
+
+Per extra index dringen hoogstens `max_per_bron` treffers op score naar voren, en alleen
+als minstens `min_signalen` (standaard 2) lijsten ze vonden; de rest komt achteraan. Reken
+bij het afknippen `max_per_bron` plekken per extra index bij, dan valt er geen eigen
+treffer weg. Zonder die twee remmen duwden in de praktijk een paar documenten die op één
+toevallig woord raakten de juiste stukken uit de top; achteraan plakken is ook geen
+oplossing, want dan knipt het afkappen ze er altijd af. Voor je eigen zoeker is er
+`index.rrf([(naam, ids_in_rangorde, gewicht), ...])`: dezelfde fusie en scoreschaal als de
+`Zoeker`, met de `signalen` erbij, zodat scores uit verschillende indexen vergelijkbaar zijn.
 
 Voor tests of een andere embedder: `bouw(cfg, embedder=...)` en `Zoeker(cfg, embedder=...)`
 accepteren elk object met `passages(teksten)` en `query(tekst)` die genormaliseerde

@@ -1015,6 +1015,53 @@ def _actualiteit(datum, dagen_horizon):
     return max(0.0, 1.0 - dagen / float(dagen_horizon))
 
 
+def rrf(lijsten, k=RRF_K):
+    """Reciprocal rank fusion over ranglijsten, voor wie zelf lijsten heeft (een eigen
+    database, een versleuteld archief) en ze op dezelfde manier wil samenvoegen als de
+    `Zoeker`. `lijsten` is een iterable van `(naam, ids, gewicht)`: `ids` in rangorde (plek 1
+    eerst), dubbele ids tellen één keer. Geeft `{id: (score, [namen van de lijsten die het
+    vonden])}`. Plek 1 in één lijst met gewicht 1 geeft 1/(k+1), precies als de `Zoeker`,
+    zodat scores uit verschillende indexen naast elkaar te leggen zijn (`samenvoegen`)."""
+    uit = {}
+    for naam, ids, gewicht in lijsten:
+        gezien = set()
+        for id_ in ids:
+            if id_ in gezien:
+                continue
+            gezien.add(id_)
+            score, signalen = uit.get(id_, (0.0, []))
+            uit[id_] = (score + gewicht / (k + len(gezien)), signalen + [naam])
+    return uit
+
+
+def samenvoegen(hoofd, extra, max_per_bron=2, min_signalen=2):
+    """Treffers uit meerdere indexen tot één lijst, zonder dat een extra index de eigen
+    treffers wegdrukt.
+
+    `hoofd` is de lijst van je eigen index (treffers met `score`), `extra` een dict
+    `{naam: treffers}` van andere indexen (uit een `Zoeker` of via `rrf`). Per extra index
+    dringen hoogstens `max_per_bron` treffers op score tussen de hoofdlijst, en alleen als
+    minstens `min_signalen` lijsten ze vonden (veld `signalen`): één signaal is in een grote,
+    rommelige verzameling vaak toeval. De rest komt daarachter, per index op score.
+
+    Knip je het resultaat af, reken dan `max_per_bron` plekken per extra index bij je gewone
+    aantal: zo valt er door het voordringen geen eigen treffer weg. Zonder die ruimte en
+    zonder drempel duwden een paar facturen die toevallig op één woord raakten de juiste
+    stukken uit de top.
+    """
+    def score(t):
+        return float(t.get("score") or 0)
+
+    voor, achter = [], []
+    for naam in extra:
+        lijst = sorted(extra[naam], key=score, reverse=True)
+        sterk = [t for t in lijst if len(t.get("signalen") or ()) >= min_signalen][:max_per_bron]
+        gekozen = {id(t) for t in sterk}
+        voor += sterk
+        achter += [t for t in lijst if id(t) not in gekozen]
+    return sorted(list(hoofd) + voor, key=score, reverse=True) + achter
+
+
 class Zoeker(object):
     """Houdt model en vectormatrix warm. Maak er één per config in een langlopend
     proces; de matrix wordt opnieuw ingelezen zodra het indexbestand verandert."""
@@ -1173,15 +1220,19 @@ class Zoeker(object):
             betekenis = self._betekenislijst(con, vraag, bron) if vrij else {}
             namenlijst = namen(vraag) if vrij else []
 
-            scores = {}
+            scores, signalen = {}, {}
             for id_, (gewicht, rang) in woord.items():
                 scores[id_] = scores.get(id_, 0.0) + gewicht / (RRF_K + rang)
+                signalen.setdefault(id_, []).append("woorden")
             for id_, rang in betekenis.items():
                 scores[id_] = scores.get(id_, 0.0) + 1.0 / (RRF_K + rang)
+                signalen.setdefault(id_, []).append("betekenis")
             if namenlijst and self.config.namen_gewicht:
                 for lijst in self._namenlijsten(con, namenlijst, bron, snippets):
                     for id_, rang in lijst.items():
                         scores[id_] = scores.get(id_, 0.0) + self.config.namen_gewicht / (RRF_K + rang)
+                        if "namen" not in signalen.setdefault(id_, []):
+                            signalen[id_].append("namen")
 
             top = 1.0 / (RRF_K + 1)
             uit = []
@@ -1198,6 +1249,7 @@ class Zoeker(object):
                 for intern in ("inhoud", "bestand", "ruw"):
                     rij.pop(intern, None)
                 rij["score"] = round(score, 5)
+                rij["signalen"] = signalen.get(id_, [])
                 if self.config.snippets:
                     # Een treffer die alleen op betekenis is gevonden heeft geen gemarkeerde
                     # woorden; dan het begin van de tekst, zodat het veld er altijd is.

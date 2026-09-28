@@ -320,6 +320,12 @@ class TestBouwEnZoek(unittest.TestCase):
         with self.assertRaises(ValueError):
             index.bouw(self.cfg, verbose=False, embedder=self.emb, extra_stukken=[{"bron": "x"}])
 
+    def test_signalen_zeggen_welke_lijsten_raakten(self):
+        r = self.zoeker.zoek("nachtelijke back-up", k=5, bron="docs")
+        self.assertEqual(r[0]["signalen"], ["woorden", "betekenis"])
+        self.assertTrue(all(set(x["signalen"]) <= {"woorden", "betekenis", "namen"} for x in r))
+        self.assertTrue(all(x["signalen"] for x in r))
+
     def test_snippets_markeren_gevonden_woord(self):
         cfg = _config(self.tmp.name, extra_algemeen='snippets = true\nsnippet_markering = ["<", ">"]\n',
                       bronnen='[[bron]]\nnaam = "docs"\npad = "docs"\n')
@@ -639,6 +645,35 @@ class TestConfig(unittest.TestCase):
                            extra_stukken=[{"bron": "x", "pad": "y", "tekst": "alleen aangeleverd"}])
             self.assertEqual(n, 1)
 
+
+
+class TestSamenvoegen(unittest.TestCase):
+    """Treffers uit meerdere indexen: rrf rekent zoals de Zoeker, samenvoegen laat een extra
+    index niet de eigen treffers wegdrukken."""
+
+    def test_rrf_rekent_als_de_zoeker(self):
+        r = index.rrf([("woorden", ["a", "b", "a"], 1.0), ("betekenis", ["b", "c"], 1.0)])
+        self.assertAlmostEqual(r["a"][0], 1.0 / (index.RRF_K + 1))       # dubbel telt één keer
+        self.assertAlmostEqual(r["b"][0], 1.0 / (index.RRF_K + 2) + 1.0 / (index.RRF_K + 1))
+        self.assertEqual(r["b"][1], ["woorden", "betekenis"])
+        self.assertEqual(r["c"][1], ["betekenis"])
+        self.assertAlmostEqual(index.rrf([("x", ["a"], 0.5)])["a"][0], 0.5 / (index.RRF_K + 1))
+
+    def test_samenvoegen(self):
+        hoofd = [{"id": "h%d" % i, "score": 0.03 - i * 0.001} for i in range(8)]
+        docs = [{"id": "d1", "score": 0.032, "signalen": ["woorden", "betekenis"]},
+                {"id": "d2", "score": 0.028, "signalen": ["woorden", "betekenis"]},
+                {"id": "d3", "score": 0.027, "signalen": ["woorden", "betekenis"]},  # boven max
+                {"id": "d4", "score": 0.031, "signalen": ["betekenis"]}]            # één signaal
+        uit = index.samenvoegen(hoofd, {"documenten": docs}, max_per_bron=2)
+        ids = [t["id"] for t in uit]
+        self.assertEqual(ids[0], "d1")
+        self.assertIn("d2", ids[:10])
+        self.assertEqual(ids[10:], ["d4", "d3"])                  # de rest achteraan, op score
+        self.assertEqual([i for i in ids[:10] if i.startswith("h")], [t["id"] for t in hoofd])
+        self.assertEqual(index.samenvoegen(hoofd, {}), hoofd)
+        self.assertEqual([t["id"] for t in index.samenvoegen([], {"a": docs[:1], "b": docs[3:]})],
+                         ["d1", "d4"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,30 @@ Alle betekenisvolle wijzigingen per versie, nieuwste bovenaan. Versienummers vol
 getal betekent nieuwe functionaliteit, van het laatste getal een reparatie. Staat er
 **index opnieuw bouwen** bij een versie, draai dan na het bijwerken `polaris bouw`.
 
+## 0.5.0 — 2026-09-28
+
+Aanleiding: een programma zocht naast zijn Polaris-index ook in een documentarchief en
+plakte die treffers achter de eigen lijst. Afgeknipt op de top-8 kwam er dus nooit een
+document mee, en een vraag waarvan het antwoord op een factuur stond, werd verkeerd
+beantwoord. Documenten gewoon op score ertussen zetten ging ook mis: een paar papieren die
+op één toevallig woord raakten, duwden de juiste stukken uit de top.
+
+- **`index.samenvoegen(hoofd, extra, max_per_bron=2, min_signalen=2)`**: treffers uit
+  meerdere indexen tot één lijst. Per extra index dringen hoogstens `max_per_bron` treffers
+  op score naar voren, alleen als minstens `min_signalen` lijsten ze vonden; de rest komt
+  achteraan. Reken bij het afknippen die plekken erbij, dan valt er geen eigen treffer weg.
+- **`index.rrf(lijsten)`**: de reciprocal rank fusion van de `Zoeker` als losse functie,
+  voor wie een eigen zoeker heeft. Zelfde scoreschaal (plek 1 = 1/(k+1)), zodat scores uit
+  verschillende indexen naast elkaar te leggen zijn. Twee eigen kopieën van deze fusie
+  (met plek 0 = 1/k, dus net een andere schaal) zijn daarmee overbodig geworden.
+- Elke treffer van de `Zoeker` heeft nu het veld **`signalen`**: welke lijsten het stuk
+  vonden (`woorden`, `betekenis`, `namen`). Rangorde en scores zijn ongewijzigd.
+- Gemeten op een kennisbank van 4.415 stukken plus een archief van ~3.000 documenten, 22
+  vragen: 19/20 → 21/22 in de voorzoek, geen vraag gezakt.
+
+Geen nieuwe indexstructuur. Wie `polaris ververs` gebruikt, krijgt door de nieuwe versie
+eenmalig een volledige bouw.
+
 ## 0.4.1 — 2026-09-28
 
 - Alleen documentatie, een commentaar en een test: voorbeelden uit een echte kennisbank
