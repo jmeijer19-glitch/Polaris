@@ -19,5 +19,19 @@
  {
   "vraag": "wachtwoord van de beheerder",
   "verwacht": "netwerk-basis"
+ },
+ {
+  "vraag": "wie neemt Bakkerij Vermeulen over tijdens de afwezigheid van Karin",
+  "verwacht": "verlof-karin",
+  "k": 3
+ },
+ {
+  "vraag": "wie is de waarnemer voor Bakkerij Vermeulen tijdens het verlof van Karin",
+  "verwacht": "verlof-karin",
+  "k": 1,
+  "verwacht_alle": [
+   "^Samenvatting$",
+   "^Waarneming per klant$"
+  ]
  }
 ]

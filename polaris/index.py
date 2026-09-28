@@ -13,10 +13,12 @@ Pijplijn, kort:
    stukken meegeven (`extra_stukken`) voor bronnen die Polaris zelf niet kent.
 2. Opslag: één SQLite-bestand met een FTS5-tabel (woorden) en een vectortabel
    (betekenis), bij elke bouw atomisch vervangen; een lock voorkomt twee bouwen tegelijk.
+   `ververs` werkt dezelfde index in één transactie bij: alleen wat veranderd is.
 3. Embeddings: een e5-model, int8-ONNX, lokaal op de CPU. Titel en kopjespad gaan mee
    in de invoer, anders weet een losse sectie niet waar hij over gaat.
-4. Zoeken: woordlijst (BM25) en betekenislijst (cosinus) apart, samengevoegd met
-   Reciprocal Rank Fusion, daarna herrangschikt op status en actualiteit. De `Zoeker`
+4. Zoeken: woordlijst (BM25), betekenislijst (cosinus) en een woordlijst per naam uit de
+   vraag, samengevoegd met Reciprocal Rank Fusion, daarna herrangschikt op status en
+   actualiteit. Een raak document levert zijn andere relevante stukken mee. De `Zoeker`
    houdt model en vectormatrix warm, zodat een langlopend proces per vraag alleen het
    zoeken zelf betaalt.
 """
@@ -40,6 +42,12 @@ worden er wij jij hij zij ik je u we ze op in aan van voor met bij naar om over 
 niet geen nog wel ook al maar toch al te tot per zo hoe wie wat welke welk
 """.split())
 
+# Woorden die met een hoofdletter midden in een vraag kunnen staan zonder een naam te zijn.
+VRAAGWOORDEN = set("""
+wie wat waar wanneer waarom hoe hoeveel welke welk waarmee waarover wiens
+who what where when why how which whose
+""".split())
+
 VERVALLEN_STATUSSEN = {"klaar", "afgerond", "gesloten", "vervallen", "vervangen",
                        "done", "closed", "deprecated"}
 
@@ -55,7 +63,7 @@ BM25_GEWICHTEN = (0.0, 6.0, 3.0, 1.0, 1.0)
 
 # Versie van de indexstructuur. Hoog dit op als de tabellen of de embed-invoer
 # veranderen: een oude index wordt dan met een duidelijke melding geweigerd.
-SCHEMA = "3"
+SCHEMA = "4"
 
 # Een bouw-lock ouder dan dit is van een afgebroken proces en mag weg.
 LOCK_VEROUDERD_S = 3600
@@ -97,6 +105,54 @@ def stammen(tekst):
     "betaal", wat als voorvoegsel-wildcard nooit was gelukt."""
     st = _snowball()
     return " ".join(st.stemWords(woorden(tekst)))
+
+
+_TOKEN = re.compile(r"\w+(?:[-'’]\w+)*")
+
+
+def namen(vraag):
+    """De eigennamen en afkortingen uit een vraag, als lijsten woorden (zoals de index ze
+    ziet). Een naam is een woord met een hoofdletter dat niet vooraan een zin staat, of een
+    woord helemaal in hoofdletters; aaneengesloten namenwoorden vormen één naam
+    ("Bakkerij Vermeulen"). Vraagwoorden en stopwoorden tellen niet mee.
+
+    Bewust eenvoudig: een naam vooraan een zin wordt gemist, en een vraag in kleine
+    letters heeft geen namen. Dan verandert er niets aan de zoektocht."""
+    uit, huidige = [], []
+    zinsbegin, vorige_eind = True, 0
+    for m in _TOKEN.finditer(vraag):
+        tussen = vraag[vorige_eind:m.start()]
+        if re.search(r"[.!?:;]", tussen):
+            zinsbegin = True
+        t = m.group(0)
+        letters = [c for c in t if c.isalpha()]
+        afkorting = len(letters) >= 2 and all(c.isupper() for c in letters)
+        naam = (len(t) >= 2 and t.lower() not in STOPWOORDEN and t.lower() not in VRAAGWOORDEN
+                and (afkorting or (t[0].isupper() and not zinsbegin)))
+        # "Vattenfall-contract": alleen "Vattenfall" is de naam. Een samenstelling houdt de
+        # delen met een hoofdletter of een cijfer ("TK-1" blijft heel).
+        delen = [d for d in re.split(r"[-'’]", t) if d and (d[0].isupper() or d.isdigit())]
+        naamwoorden = woorden(" ".join(delen))
+        if naam and huidige and not tussen.strip():
+            huidige.extend(naamwoorden)
+        else:
+            if huidige:
+                uit.append(huidige)
+            huidige = naamwoorden if naam else []
+        zinsbegin, vorige_eind = False, m.end()
+    if huidige:
+        uit.append(huidige)
+    gezien, uniek = set(), []
+    for n in uit:
+        if tuple(n) not in gezien:
+            gezien.add(tuple(n))
+            uniek.append(n)
+    return uniek
+
+
+def _frase(woordenlijst):
+    """Een naam als FTS5-frase, alleen op de leesbare kolommen (niet de stam-kolom)."""
+    return '{titel sectie tekst} : "%s"' % " ".join(woordenlijst)
 
 
 def _verwijzingen(tekst, patronen, eigen_id=""):
@@ -252,10 +308,20 @@ def leesbaar(waarde, inspring=""):
 class Telling(object):
     """Houdt bij wat er is overgeslagen en gemaskeerd, zodat de bouw dat kan melden."""
 
-    def __init__(self):
+    def __init__(self, hergebruik=None):
         self.uitgesloten = 0
         self.optout = 0
         self.gemaskeerd = 0
+        # Per markdown-bestand (bron, pad): [mtime_ns, grootte, stuk-ID's die het opleverde].
+        # `ververs` vergelijkt dit met de schijf; wat gelijk is, hoeft niet opnieuw gelezen.
+        self.bestanden = {}
+        # Van `ververs`: {(bron, pad): (mtime_ns, grootte, [opgeslagen stukken])}.
+        self.hergebruik = hergebruik or {}
+        # Van `ververs`: {stuk-ID: (vingerafdruk van het ruwe stuk, opgeslagen stuk)} voor
+        # aangeleverde stukken; gelijk ruw stuk = niet opnieuw maskeren.
+        self.hergebruik_extra = {}
+        self.gelezen = 0
+        self.hergebruikt = 0
 
     def maskeer(self, tekst, config):
         if not config.maskeer_geheimen:
@@ -281,24 +347,39 @@ def _stukken_markdown(bron, config, telling):
                 telling.uitgesloten += 1
                 continue
             try:
+                st = os.stat(vol)
+            except OSError:
+                continue
+            sleutel = (bron.naam, rel)
+            oud = telling.hergebruik.get(sleutel)
+            if oud is not None and oud[:2] == (st.st_mtime_ns, st.st_size):
+                telling.hergebruikt += 1
+                telling.bestanden[sleutel] = [st.st_mtime_ns, st.st_size, [s["id"] for s in oud[2]]]
+                uit.extend(oud[2])
+                continue
+            try:
                 with io.open(vol, encoding="utf-8") as fh:
                     tekst = fh.read()
             except (OSError, UnicodeDecodeError):
                 continue
-            if not tekst.strip():
-                continue
-            if beveiliging.heeft_optout(tekst):
+            telling.gelezen += 1
+            nieuw = []
+            if tekst.strip() and beveiliging.heeft_optout(tekst):
                 telling.optout += 1
-                continue
-            tekst = telling.maskeer(tekst, config)
-            uit.extend(stukken_uit_markdown(bron.naam, rel, tekst, config,
-                                            datum=_datum(vol, tekst)))
+            elif tekst.strip():
+                tekst = telling.maskeer(tekst, config)
+                nieuw = stukken_uit_markdown(bron.naam, rel, tekst, config,
+                                             datum=_datum(vol, tekst), bestand=rel)
+            telling.bestanden[sleutel] = [st.st_mtime_ns, st.st_size, [s["id"] for s in nieuw]]
+            uit.extend(nieuw)
     return uit
 
 
-def stukken_uit_markdown(bron_naam, rel, tekst, config, datum=""):
+def stukken_uit_markdown(bron_naam, rel, tekst, config, datum="", bestand=""):
     """Eén markdown-document naar stukken. Ook bruikbaar voor tekst die niet uit een
-    bestand komt (een aanroepend programma dat zelf bronnen aanlevert).
+    bestand komt (een aanroepend programma dat zelf bronnen aanlevert). `bestand` is het
+    bronbestand waar de stukken uit komen; `ververs` gebruikt het om een ongewijzigd
+    bestand niet opnieuw te lezen.
 
     Frontmatter: `description`/`omschrijving` gaat vóór elk stuk (een losse sectie
     houdt zo zijn context), `status` wordt de status van alle stukken, `titel`/`title`/
@@ -324,6 +405,8 @@ def stukken_uit_markdown(bron_naam, rel, tekst, config, datum=""):
             "status": status,
             "tekst": chunk,
             "verwijzingen": _verwijzingen(chunk, config.verwijzingspatronen),
+            "volgnr": volgnr,
+            "bestand": bestand,
         })
     if not uit and omschrijving:
         uit.append({
@@ -331,6 +414,7 @@ def stukken_uit_markdown(bron_naam, rel, tekst, config, datum=""):
             "titel": titel, "sectie": "", "datum": datum, "status": status,
             "tekst": omschrijving,
             "verwijzingen": _verwijzingen(omschrijving, config.verwijzingspatronen),
+            "volgnr": 0, "bestand": bestand,
         })
     return uit
 
@@ -376,6 +460,8 @@ def _stukken_json_lijst(bron, config, telling):
             "status": status,
             "tekst": tekst,
             "verwijzingen": _verwijzingen(tekst, config.verwijzingspatronen, item_id),
+            "volgnr": 0,
+            "bestand": bestand,
         })
         regel = " - ".join(x for x in (item_id, titel) if x)
         extra = ", ".join(x for x in (sectie, status) if x)
@@ -397,6 +483,8 @@ def _stukken_json_lijst(bron, config, telling):
                 "status": "",
                 "tekst": telling.maskeer(deel, config),
                 "verwijzingen": "",
+                "volgnr": volgnr,
+                "bestand": bestand,
             })
     return uit
 
@@ -411,24 +499,41 @@ def verzamel_stukken(config, telling=None, extra_stukken=None):
             stukken += _stukken_json_lijst(bron, config, telling)
         else:
             raise ValueError("onbekend brontype %r bij bron %r" % (bron.type, bron.naam))
+    per_document = {}
     for s in extra_stukken or []:
-        stukken.append(_normaliseer_stuk(s, config, telling))
+        stuk = _normaliseer_stuk(s, config, telling, per_document)
+        stukken.append(stuk)
     return _ontdubbel(stukken)
 
 
 _VELDEN = ("id", "bron", "pad", "titel", "sectie", "datum", "status", "tekst", "verwijzingen")
 
 
-def _normaliseer_stuk(s, config, telling):
+def _normaliseer_stuk(s, config, telling, per_document=None):
     """Een stuk van een aanroepend programma: `bron`, `pad` en `tekst` zijn verplicht,
-    de rest is optioneel. Krijgt dezelfde maskering als eigen bronnen."""
+    de rest is optioneel. Krijgt dezelfde maskering als eigen bronnen. `volgnr` (de plek
+    in het document) is standaard de volgorde waarin stukken met dezelfde bron en hetzelfde
+    pad worden aangeleverd."""
     for veld in ("bron", "pad", "tekst"):
         if not s.get(veld):
             raise ValueError("extra stuk mist het veld %r" % veld)
     uit = {v: str(s.get(v, "") or "") for v in _VELDEN}
-    uit["tekst"] = telling.maskeer(uit["tekst"], config)
+    per_document = per_document if per_document is not None else {}
+    doc = (uit["bron"], uit["pad"])
+    try:
+        uit["volgnr"] = int(s["volgnr"]) if s.get("volgnr") is not None else per_document.get(doc, 0)
+    except (TypeError, ValueError):
+        uit["volgnr"] = per_document.get(doc, 0)
+    per_document[doc] = per_document.get(doc, 0) + 1
+    uit["bestand"] = ""
     if not uit["id"]:
         uit["id"] = _stuk_id(uit["bron"], uit["pad"], uit["sectie"], s.get("volgnr", 0))
+    uit["ruw"] = _inhoud(uit)
+    oud = telling.hergebruik_extra.get(uit["id"])
+    if oud is not None and oud[0] == uit["ruw"]:
+        telling.hergebruikt += 1
+        return dict(oud[1], ruw=uit["ruw"])
+    uit["tekst"] = telling.maskeer(uit["tekst"], config)
     if not uit["titel"]:
         uit["titel"] = os.path.splitext(os.path.basename(uit["pad"]))[0]
     if not uit["verwijzingen"]:
@@ -580,6 +685,95 @@ class _Slot(object):
             pass
 
 
+def _inhoud(s):
+    """Vingerafdruk van alles wat er van een stuk wordt opgeslagen; `ververs` vergelijkt hierop."""
+    delen = [s.get(v, "") for v in _VELDEN] + [s.get("volgnr", 0), s.get("bestand", "")]
+    return hashlib.sha1(json.dumps(delen, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
+def _maak_tabellen(cur):
+    cur.execute("""CREATE TABLE stuk(
+        id TEXT PRIMARY KEY, bron TEXT, pad TEXT, titel TEXT, sectie TEXT,
+        datum TEXT, status TEXT, tekst TEXT, verwijzingen TEXT,
+        volgnr INTEGER, bestand TEXT, inhoud TEXT, ruw TEXT)""")
+    # Voor het aanvullen: de andere stukken van hetzelfde document, in documentvolgorde.
+    cur.execute("CREATE INDEX stuk_document ON stuk(bron, pad, volgnr)")
+    # De vijfde kolom bevat bij stemmer = "nl" de Snowball-stammen van titel, sectie en
+    # tekst; anders is hij leeg. Zo is de tabelstructuur onafhankelijk van de instelling.
+    # De rowid van een FTS-rij is die van zijn stuk, zodat `ververs` gericht kan wissen.
+    cur.execute("""CREATE VIRTUAL TABLE stuk_fts USING fts5(
+        id UNINDEXED, titel, sectie, tekst, stammen,
+        tokenize="unicode61 remove_diacritics 2", prefix='3 5')""")
+    cur.execute("CREATE TABLE vector(id TEXT PRIMARY KEY, vec BLOB)")
+    cur.execute("CREATE TABLE embed_cache(sleutel TEXT PRIMARY KEY, vec BLOB)")
+    cur.execute("CREATE TABLE meta(sleutel TEXT PRIMARY KEY, waarde TEXT)")
+    # Per markdown-bestand wat het opleverde, zodat `ververs` een ongewijzigd bestand niet
+    # opnieuw leest. `ids` is leeg (NULL) als het bestand niet zonder meer te hergebruiken is.
+    cur.execute("""CREATE TABLE bronbestand(bron TEXT, pad TEXT, mtime INTEGER,
+        grootte INTEGER, ids TEXT, PRIMARY KEY (bron, pad))""")
+
+
+def _schrijf_stuk(cur, s, config):
+    cur.execute("INSERT INTO stuk VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (s["id"], s["bron"], s["pad"], s["titel"], s["sectie"], s["datum"],
+                 s["status"], s["tekst"], s["verwijzingen"], s.get("volgnr", 0),
+                 s.get("bestand", ""), _inhoud(s), s.get("ruw", "")))
+    stam = (stammen("%s %s %s" % (s["titel"], s["sectie"], s["tekst"]))
+            if config.stemmer == "nl" else "")
+    cur.execute("INSERT INTO stuk_fts(rowid, id, titel, sectie, tekst, stammen) "
+                "VALUES (?,?,?,?,?,?)",
+                (cur.lastrowid, s["id"], s["titel"], s["sectie"], s["tekst"], stam))
+
+
+def _embed(stukken, sleutels, cache, config, embedder, verbose):
+    """Vul `cache` aan met vectoren voor de stukken waarvan de sleutel er nog niet in zit."""
+    nieuw = [s for s in stukken if sleutels[s["id"]] not in cache]
+    if verbose:
+        print("nieuw te embedden: %d (cache treft %d)" % (len(nieuw), len(stukken) - len(nieuw)))
+    if not nieuw:
+        return
+    embedder = embedder or Embedder(config)
+    # Op lengte sorteren: een batch wordt opgevuld tot zijn langste tekst, dus korte
+    # stukken naast één lange kosten evenveel als allemaal lange.
+    nieuw.sort(key=lambda s: len(s["tekst"]))
+    klaar = 0
+    for i in range(0, len(nieuw), 16):
+        batch = nieuw[i:i + 16]
+        for s, v in zip(batch, embedder.passages([embed_tekst(b) for b in batch])):
+            cache[sleutels[s["id"]]] = np.asarray(v, dtype=np.float32).tobytes()
+        klaar += len(batch)
+        if verbose and len(nieuw) >= 500 and klaar % 496 == 0:
+            print("  embedden: %d/%d" % (klaar, len(nieuw)), flush=True)
+
+
+def _bronbestanden(telling, stukken):
+    """Rijen voor de tabel bronbestand. Een bestand is alleen te hergebruiken als al zijn
+    stukken ongewijzigd in de index staan: ontdubbelen kan er een hebben weggelaten of een
+    andere ID gegeven, en dan zou hergebruik iets anders opleveren dan opnieuw lezen."""
+    herkomst = {s["id"]: (s["bron"], s.get("bestand", "")) for s in stukken}
+    for (bron, pad), (mtime, grootte, ids) in sorted(telling.bestanden.items()):
+        zuiver = all(herkomst.get(i) == (bron, pad) for i in ids)
+        yield (bron, pad, mtime, grootte, json.dumps(ids) if zuiver else None)
+
+
+def _schrijf_meta(cur, config, n):
+    from . import versie
+    for k, v in (("model", config.model_repo), ("dim", str(config.dim)),
+                 ("gebouwd", time.strftime("%Y-%m-%d %H:%M")), ("versie", versie()),
+                 ("schema", SCHEMA), ("stemmer", config.stemmer),
+                 ("config", config.vingerafdruk()), ("stukken", str(n))):
+        cur.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (k, v))
+
+
+def _meld_verzameld(telling, stukken, verbose):
+    if not stukken:
+        raise ValueError("niets om te indexeren: geen [[bron]] in de config en geen extra_stukken")
+    if verbose:
+        print("verzameld: %d stukken" % len(stukken))
+        print("beveiliging: %d bestand(en) uitgesloten, %d opt-out, %d geheim(en) gemaskeerd"
+              % (telling.uitgesloten, telling.optout, telling.gemaskeerd))
+
+
 def bouw(config, verbose=True, embedder=None, extra_stukken=None):
     """(Her)bouw de index. `embedder` is optioneel (standaard het e5-model uit de config);
     `extra_stukken` zijn stukken van het aanroepende programma, zie _normaliseer_stuk."""
@@ -591,29 +785,14 @@ def bouw(config, verbose=True, embedder=None, extra_stukken=None):
 def _bouw(config, verbose, embedder, extra_stukken):
     telling = Telling()
     stukken = verzamel_stukken(config, telling, extra_stukken)
-    if not stukken:
-        raise ValueError("niets om te indexeren: geen [[bron]] in de config en geen extra_stukken")
-    if verbose:
-        print("verzameld: %d stukken" % len(stukken))
-        print("beveiliging: %d bestand(en) uitgesloten, %d opt-out, %d geheim(en) gemaskeerd"
-              % (telling.uitgesloten, telling.optout, telling.gemaskeerd))
+    _meld_verzameld(telling, stukken, verbose)
 
     db_tmp = config.db_pad + ".tmp"
     if os.path.exists(db_tmp):
         os.remove(db_tmp)
     con = sqlite3.connect(db_tmp)
     cur = con.cursor()
-    cur.execute("""CREATE TABLE stuk(
-        id TEXT PRIMARY KEY, bron TEXT, pad TEXT, titel TEXT, sectie TEXT,
-        datum TEXT, status TEXT, tekst TEXT, verwijzingen TEXT)""")
-    # De vijfde kolom bevat bij stemmer = "nl" de Snowball-stammen van titel, sectie en
-    # tekst; anders is hij leeg. Zo is de tabelstructuur onafhankelijk van de instelling.
-    cur.execute("""CREATE VIRTUAL TABLE stuk_fts USING fts5(
-        id UNINDEXED, titel, sectie, tekst, stammen,
-        tokenize="unicode61 remove_diacritics 2", prefix='3 5')""")
-    cur.execute("CREATE TABLE vector(id TEXT PRIMARY KEY, vec BLOB)")
-    cur.execute("CREATE TABLE embed_cache(sleutel TEXT PRIMARY KEY, vec BLOB)")
-    cur.execute("CREATE TABLE meta(sleutel TEXT PRIMARY KEY, waarde TEXT)")
+    _maak_tabellen(cur)
 
     cache = {}
     if os.path.exists(config.db_pad):
@@ -627,45 +806,18 @@ def _bouw(config, verbose, embedder, extra_stukken):
     # Eerst de goedkope stap: tekst en woordindex. Een datafout (dubbele ID, verkeerd
     # type) komt zo binnen een seconde boven, niet pas na een kwartier embedden.
     for s in stukken:
-        cur.execute("INSERT INTO stuk VALUES (?,?,?,?,?,?,?,?,?)",
-                    (s["id"], s["bron"], s["pad"], s["titel"], s["sectie"],
-                     s["datum"], s["status"], s["tekst"], s["verwijzingen"]))
-        stam = (stammen("%s %s %s" % (s["titel"], s["sectie"], s["tekst"]))
-                if config.stemmer == "nl" else "")
-        cur.execute("INSERT INTO stuk_fts VALUES (?,?,?,?,?)",
-                    (s["id"], s["titel"], s["sectie"], s["tekst"], stam))
+        _schrijf_stuk(cur, s, config)
     con.commit()
 
     sleutels = {s["id"]: _cache_sleutel(config, embed_tekst(s)) for s in stukken}
-    nieuw = [s for s in stukken if sleutels[s["id"]] not in cache]
-    if verbose:
-        print("nieuw te embedden: %d (cache treft %d)" % (len(nieuw), len(stukken) - len(nieuw)))
-
-    if nieuw:
-        embedder = embedder or Embedder(config)
-        # Op lengte sorteren: een batch wordt opgevuld tot zijn langste tekst, dus korte
-        # stukken naast één lange kosten evenveel als allemaal lange.
-        nieuw.sort(key=lambda s: len(s["tekst"]))
-        klaar = 0
-        for i in range(0, len(nieuw), 16):
-            batch = nieuw[i:i + 16]
-            for s, v in zip(batch, embedder.passages([embed_tekst(b) for b in batch])):
-                cache[sleutels[s["id"]]] = np.asarray(v, dtype=np.float32).tobytes()
-            klaar += len(batch)
-            if verbose and len(nieuw) >= 500 and klaar % 496 == 0:
-                print("  embedden: %d/%d" % (klaar, len(nieuw)), flush=True)
+    _embed(stukken, sleutels, cache, config, embedder, verbose)
 
     for s in stukken:
         sleutel = sleutels[s["id"]]
         cur.execute("INSERT INTO vector VALUES (?,?)", (s["id"], cache[sleutel]))
         cur.execute("INSERT OR IGNORE INTO embed_cache VALUES (?,?)", (sleutel, cache[sleutel]))
-
-    from . import versie
-    for k, v in (("model", config.model_repo), ("dim", str(config.dim)),
-                 ("gebouwd", time.strftime("%Y-%m-%d %H:%M")), ("versie", versie()),
-                 ("schema", SCHEMA), ("stemmer", config.stemmer),
-                 ("stukken", str(len(stukken)))):
-        cur.execute("INSERT INTO meta VALUES (?,?)", (k, v))
+    cur.executemany("INSERT INTO bronbestand VALUES (?,?,?,?,?)", _bronbestanden(telling, stukken))
+    _schrijf_meta(cur, config, len(stukken))
 
     con.commit()
     con.close()
@@ -677,6 +829,133 @@ def _bouw(config, verbose, embedder, extra_stukken):
     if verbose:
         print("index gebouwd: %s" % config.db_pad)
     return len(stukken)
+
+
+def _waarom_volledig(config):
+    """Waarom `ververs` niet op de bestaande index kan voortbouwen, of "" als het wel kan."""
+    if not os.path.exists(config.db_pad):
+        return "er is nog geen index"
+    try:
+        m = meta(config.db_pad)
+    except sqlite3.Error:
+        return "de index is niet leesbaar"
+    if m.get("schema") != SCHEMA:
+        return "de index heeft een oudere indexstructuur"
+    if m.get("config") != config.vingerafdruk():
+        return "de config is veranderd sinds de vorige bouw"
+    return ""
+
+
+def ververs(config, verbose=True, embedder=None, extra_stukken=None):
+    """Werk de index bij met alleen wat veranderd is: nieuwe stukken erbij, gewijzigde
+    vervangen, verdwenen weg, in één transactie. Een markdown-bestand met dezelfde
+    wijzigingstijd en grootte wordt niet opnieuw gelezen; een JSON-lijst wordt per item
+    vergeleken, aangeleverde stukken per stuk. Het resultaat is dezelfde index als een
+    volledige bouw zou geven. Kan dat niet (geen index, oudere structuur, andere config),
+    dan wordt het een volledige bouw.
+
+    Geeft een dict met `stukken`, `nieuw_of_gewijzigd`, `weg`, `gelezen`, `overgeslagen`
+    en `volledig` (True als het een volledige bouw werd)."""
+    os.makedirs(os.path.dirname(config.db_pad) or ".", exist_ok=True)
+    with _Slot(config.db_pad):
+        reden = _waarom_volledig(config)
+        if reden:
+            if verbose:
+                print("volledige bouw: %s" % reden)
+            n = _bouw(config, verbose, embedder, extra_stukken)
+            return {"stukken": n, "nieuw_of_gewijzigd": n, "weg": 0, "gelezen": None,
+                    "overgeslagen": 0, "volledig": True, "reden": reden}
+        return _ververs(config, verbose, embedder, extra_stukken)
+
+
+def _hergebruik(con):
+    """Wat `ververs` niet opnieuw hoeft te maken. Eén: {(bron, pad): (mtime_ns, grootte,
+    [stukken])} voor de markdown-bestanden waarvan de index precies de stukken bevat die
+    het bestand de vorige keer opleverde. Twee: {stuk-ID: (ruw, stuk)} voor aangeleverde
+    stukken, zodat een ongewijzigd stuk niet opnieuw gemaskeerd wordt."""
+    opgeslagen, extra = {}, {}
+    for r in con.execute("SELECT * FROM stuk ORDER BY bron, pad, volgnr"):
+        s = dict(r)
+        s.pop("inhoud", None)
+        ruw = s.pop("ruw", "") or ""
+        if s["bestand"]:
+            opgeslagen.setdefault((s["bron"], s["bestand"]), []).append(s)
+        elif ruw:
+            extra[s["id"]] = (ruw, s)
+    uit = {}
+    for bron, pad, mtime, grootte, ids in con.execute(
+            "SELECT bron, pad, mtime, grootte, ids FROM bronbestand WHERE ids IS NOT NULL"):
+        stukken = opgeslagen.get((bron, pad), [])
+        if sorted(s["id"] for s in stukken) == sorted(json.loads(ids)):
+            uit[(bron, pad)] = (mtime, grootte, stukken)
+    return uit, extra
+
+
+def _ververs(config, verbose, embedder, extra_stukken):
+    begin = time.time()
+    con = sqlite3.connect(config.db_pad, isolation_level=None)
+    con.row_factory = sqlite3.Row
+    try:
+        bestanden, extra = _hergebruik(con)
+        telling = Telling(bestanden)
+        telling.hergebruik_extra = extra
+        stukken = verzamel_stukken(config, telling, extra_stukken)
+        _meld_verzameld(telling, stukken, verbose)
+
+        bestaand = dict(con.execute("SELECT id, inhoud FROM stuk").fetchall())
+        nieuw = {s["id"]: s for s in stukken}
+        weg = [i for i, h in bestaand.items() if i not in nieuw or h != _inhoud(nieuw[i])]
+        erbij = [s for s in stukken if bestaand.get(s["id"]) != _inhoud(s)]
+
+        sleutels = {s["id"]: _cache_sleutel(config, embed_tekst(s)) for s in stukken}
+        cache = {}
+        for s in erbij:
+            r = con.execute("SELECT vec FROM embed_cache WHERE sleutel=?",
+                            (sleutels[s["id"]],)).fetchone()
+            if r is not None:
+                cache[sleutels[s["id"]]] = r[0]
+        # Embedden vóór de transactie: dat kan even duren, en zoeken blijft intussen gewoon
+        # werken op de index zoals hij was.
+        _embed(erbij, sleutels, cache, config, embedder, verbose and bool(erbij))
+
+        cur = con.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            for i in weg:
+                cur.execute("DELETE FROM stuk_fts WHERE rowid = (SELECT rowid FROM stuk WHERE id=?)",
+                            (i,))
+                cur.execute("DELETE FROM stuk WHERE id=?", (i,))
+                cur.execute("DELETE FROM vector WHERE id=?", (i,))
+            for s in erbij:
+                _schrijf_stuk(cur, s, config)
+                sleutel = sleutels[s["id"]]
+                cur.execute("INSERT INTO vector VALUES (?,?)", (s["id"], cache[sleutel]))
+                cur.execute("INSERT OR IGNORE INTO embed_cache VALUES (?,?)",
+                            (sleutel, cache[sleutel]))
+            # Net als bij een bouw: cache-regels die geen enkel stuk meer gebruikt, gaan weg.
+            gebruikt = set(sleutels.values())
+            ongebruikt = [(k,) for (k,) in cur.execute("SELECT sleutel FROM embed_cache").fetchall()
+                          if k not in gebruikt]
+            cur.executemany("DELETE FROM embed_cache WHERE sleutel=?", ongebruikt)
+            cur.execute("DELETE FROM bronbestand")
+            cur.executemany("INSERT INTO bronbestand VALUES (?,?,?,?,?)",
+                            _bronbestanden(telling, stukken))
+            _schrijf_meta(cur, config, len(stukken))
+            cur.execute("COMMIT")
+        except BaseException:
+            cur.execute("ROLLBACK")
+            raise
+    finally:
+        con.close()
+    uit = {"stukken": len(stukken), "nieuw_of_gewijzigd": len(erbij),
+           "weg": len(set(weg) - set(nieuw)), "gelezen": telling.gelezen,
+           "overgeslagen": telling.hergebruikt, "volledig": False}
+    if verbose:
+        print("ververst in %.1f s: %d nieuw of gewijzigd, %d weg, %d ongewijzigd "
+              "(%d bestand(en) gelezen, %d overgeslagen)"
+              % (time.time() - begin, uit["nieuw_of_gewijzigd"], uit["weg"],
+                 len(stukken) - len(erbij), telling.gelezen, telling.hergebruikt))
+    return uit
 
 
 # ---------------------------------------------------------------- zoeken
@@ -765,7 +1044,7 @@ class Zoeker(object):
 
     def _laad_matrix(self, con):
         st = os.stat(self.config.db_pad)
-        stand = (st.st_mtime, st.st_size)
+        stand = (st.st_mtime_ns, st.st_size)
         if self._stand == stand:
             return
         rijen = con.execute("SELECT v.id, v.vec, s.bron FROM vector v JOIN stuk s ON s.id = v.id"
@@ -776,38 +1055,58 @@ class Zoeker(object):
                         .reshape(len(rijen), self.config.dim) if rijen else None)
         self._stand = stand
 
-    def _woordlijst(self, con, vraag, bron):
-        """Geeft ({id: (gewicht, rang)}, {id: snippet}): exact eerst, dan aangevuld met
-        stammen. Snippets alleen als de config erom vraagt."""
-        uit, snippets = {}, {}
+    def _fts(self, con, query, bron=None, limiet=KANDIDATEN, extra_sql="", extra_params=()):
+        """Eén FTS5-zoekopdracht, gerangschikt op BM25. Geeft rijen met `id` en, als de
+        config erom vraagt, `fragment`. Ongeldige syntax geeft een lege lijst."""
         rangorde = "bm25(stuk_fts, %s)" % ", ".join(str(g) for g in BM25_GEWICHTEN)
-        filter_sql, params_extra = "", ()
-        if bron:
-            filter_sql = " AND id IN (SELECT id FROM stuk WHERE bron = ?)"
-            params_extra = (bron,)
         kolommen, params_voor = "id", ()
         if self.config.snippets:
             # Kolom 3 = tekst; de stam-kolom is voor mensen onleesbaar.
             kolommen = "id, snippet(stuk_fts, 3, ?, ?, '…', 24) AS fragment"
             params_voor = self.config.snippet_markering
+        filter_sql, params_na = "", ()
+        if bron:
+            filter_sql = " AND id IN (SELECT id FROM stuk WHERE bron = ?)"
+            params_na = (bron,)
+        try:
+            return con.execute(
+                "SELECT %s FROM stuk_fts WHERE stuk_fts MATCH ?%s%s ORDER BY %s LIMIT %d"
+                % (kolommen, filter_sql, extra_sql, rangorde, limiet),
+                params_voor + (query,) + params_na + tuple(extra_params)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    def _woordlijst(self, con, vraag, bron, snippets):
+        """{id: (gewicht, rang)}: exact eerst, dan aangevuld met stammen."""
+        uit = {}
         pogingen = ([(vraag, 1.0)] if is_fts_syntax(vraag)
                     else _fts_pogingen(vraag, self.config.stemmer))
         for query, gewicht in pogingen:
             if len(uit) >= KANDIDATEN:
                 break
-            try:
-                rijen = con.execute(
-                    "SELECT %s FROM stuk_fts WHERE stuk_fts MATCH ?%s ORDER BY %s LIMIT %d"
-                    % (kolommen, filter_sql, rangorde, KANDIDATEN),
-                    params_voor + (query,) + params_extra).fetchall()
-            except sqlite3.OperationalError:
-                continue
-            for r in rijen:
+            for r in self._fts(con, query, bron):
                 if r["id"] not in uit:
                     uit[r["id"]] = (gewicht, len(uit) + 1)
                     if self.config.snippets:
-                        snippets[r["id"]] = r["fragment"]
-        return uit, snippets
+                        snippets.setdefault(r["id"], r["fragment"])
+        return uit
+
+    def _namenlijsten(self, con, namenlijst, bron, snippets):
+        """Per naam uit de vraag een eigen woordlijst, en bij twee of meer namen nog één voor
+        de stukken die ze allemaal noemen. Zo zakt een stuk dat de klant uit de vraag noemt
+        niet weg achter stukken die alleen over hetzelfde onderwerp gaan."""
+        vragen = [_frase(n) for n in namenlijst]
+        if len(vragen) > 1:
+            vragen.append(" AND ".join(vragen))
+        lijsten = []
+        for query in vragen:
+            lijst = {}
+            for r in self._fts(con, query, bron):
+                lijst[r["id"]] = len(lijst) + 1
+                if self.config.snippets:
+                    snippets.setdefault(r["id"], r["fragment"])
+            lijsten.append(lijst)
+        return lijsten
 
     def _betekenislijst(self, con, vraag, bron):
         self._laad_matrix(con)
@@ -823,19 +1122,66 @@ class Zoeker(object):
             uit[self._ids[i]] = len(uit) + 1
         return uit
 
+    def _vul_aan(self, con, treffers, vraag, namenlijst):
+        """Is een document raak, dan komen de andere stukken ervan mee die de namen (of,
+        zonder namen, de woorden) uit de vraag bevatten, ook als ze zelf buiten de top-k
+        vielen: hoogstens `aanvullen` per document, in documentvolgorde, bij de hoogste
+        treffer van dat document. Een samenvatting en een tabel verderop die elkaar
+        tegenspreken, komen zo allebei boven."""
+        # Alleen sectie en tekst: de titel delen alle stukken van een document, dus een naam
+        # in de titel zou elk stuk raak maken.
+        if namenlijst:
+            termen = ['"%s"' % " ".join(n) for n in namenlijst]
+        else:
+            termen = [w[:-3] + "*" if len(w) >= 7 else '"%s"' % w
+                      for w in woorden(vraag) if w not in STOPWOORDEN and len(w) > 2]
+        if not termen:
+            return
+        query = "{sectie tekst} : (%s)" % " OR ".join(termen)
+        al_getoond = {t["id"] for t in treffers}
+        gedaan = set()
+        for t in treffers:
+            doc = (t["bron"], t["pad"])
+            if doc in gedaan:
+                continue
+            gedaan.add(doc)
+            rijen = self._fts(con, query, limiet=self.config.aanvullen + len(al_getoond),
+                              extra_sql=" AND id IN (SELECT id FROM stuk WHERE bron = ? AND pad = ?)",
+                              extra_params=doc)
+            ids = [r["id"] for r in rijen if r["id"] not in al_getoond][:self.config.aanvullen]
+            if not ids:
+                continue
+            fragmenten = {r["id"]: r["fragment"] for r in rijen} if self.config.snippets else {}
+            extra = []
+            for id_ in ids:
+                r = con.execute("SELECT id, sectie, volgnr, tekst FROM stuk WHERE id=?",
+                                (id_,)).fetchone()
+                stuk = dict(r)
+                if self.config.snippets:
+                    stuk["fragment"] = " ".join((fragmenten.get(id_) or r["tekst"][:200]).split())
+                extra.append(stuk)
+            t["ook_in_dit_document"] = sorted(extra, key=lambda x: x["volgnr"])
+
     def zoek(self, vraag, k=8, bron=None):
         self._controleer()
         con = sqlite3.connect(self.config.db_pad)
         con.row_factory = sqlite3.Row
         try:
-            woord, snippets = self._woordlijst(con, vraag, bron)
-            betekenis = {} if is_fts_syntax(vraag) else self._betekenislijst(con, vraag, bron)
+            snippets = {}
+            woord = self._woordlijst(con, vraag, bron, snippets)
+            vrij = not is_fts_syntax(vraag)
+            betekenis = self._betekenislijst(con, vraag, bron) if vrij else {}
+            namenlijst = namen(vraag) if vrij else []
 
             scores = {}
             for id_, (gewicht, rang) in woord.items():
                 scores[id_] = scores.get(id_, 0.0) + gewicht / (RRF_K + rang)
             for id_, rang in betekenis.items():
                 scores[id_] = scores.get(id_, 0.0) + 1.0 / (RRF_K + rang)
+            if namenlijst and self.config.namen_gewicht:
+                for lijst in self._namenlijsten(con, namenlijst, bron, snippets):
+                    for id_, rang in lijst.items():
+                        scores[id_] = scores.get(id_, 0.0) + self.config.namen_gewicht / (RRF_K + rang)
 
             top = 1.0 / (RRF_K + 1)
             uit = []
@@ -849,6 +1195,8 @@ class Zoeker(object):
                     score += (self.config.actualiteit_bonus * top
                               * _actualiteit(r["datum"], self.config.actualiteit_dagen))
                 rij = dict(r)
+                for intern in ("inhoud", "bestand", "ruw"):
+                    rij.pop(intern, None)
                 rij["score"] = round(score, 5)
                 if self.config.snippets:
                     # Een treffer die alleen op betekenis is gevonden heeft geen gemarkeerde
@@ -856,7 +1204,10 @@ class Zoeker(object):
                     rij["fragment"] = " ".join((snippets.get(id_) or r["tekst"][:200]).split())
                 uit.append(rij)
             uit.sort(key=lambda x: -x["score"])
-            return uit[:k]
+            uit = uit[:k]
+            if vrij and self.config.aanvullen:
+                self._vul_aan(con, uit, vraag, namenlijst)
+            return uit
         finally:
             con.close()
 

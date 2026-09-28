@@ -40,6 +40,16 @@ stemmer = "grof"
 snippets = false
 # snippet_markering = ["[", "]"]
 
+# Namen: eigennamen en afkortingen uit de vraag krijgen elk een eigen woordzoektocht in
+# de fusie, met dit gewicht. Een stuk dat de klant uit de vraag noemt, zakt zo niet weg
+# achter stukken die alleen over hetzelfde onderwerp gaan. 0 = uit.
+namen_gewicht = 0.7
+
+# Aanvullen: is een document raak, dan komen er tot zoveel andere stukken van dat
+# document mee die de namen of woorden uit de vraag bevatten (veld ook_in_dit_document).
+# 0 = uit.
+aanvullen = 2
+
 # Patronen (reguliere expressies) voor ID's die naar een extern systeem verwijzen.
 # Standaard: ID's als AB-123. Voeg eigen formaten toe, bijvoorbeeld datumgebaseerde
 # ticketnummers als T20260101.0001:

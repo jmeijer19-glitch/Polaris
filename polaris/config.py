@@ -118,6 +118,20 @@ class Config(object):
             raise ValueError("snippet_markering moet een lijst van twee tekens zijn")
         self.snippet_markering = (str(markering[0]), str(markering[1]))
 
+        # Namen: eigennamen en afkortingen uit de vraag krijgen elk een eigen woordzoektocht
+        # in de fusie, met dit gewicht; een stuk met álle namen krijgt er nog een lijst bij.
+        # Het betekenisdeel ziet "over hetzelfde onderwerp" als raak, ook als het de klant
+        # uit de vraag niet noemt. 0 = uit.
+        self.namen_gewicht = float(alg.get("namen_gewicht", 0.7))
+
+        # Aanvullen: is een document raak, dan komen er tot zoveel andere stukken van dat
+        # document mee die de namen of woorden uit de vraag bevatten (veld
+        # `ook_in_dit_document`). Een samenvatting en een tabel verderop die elkaar
+        # tegenspreken, staan zo naast elkaar. 0 = uit.
+        self.aanvullen = int(alg.get("aanvullen", 2))
+        if self.aanvullen < 0:
+            raise ValueError("aanvullen moet 0 of meer zijn, niet %r" % self.aanvullen)
+
         patronen = alg.get("verwijzingspatronen", STANDAARD_VERWIJZINGSPATRONEN)
         try:
             self.verwijzingspatronen = [re.compile(p) for p in _lijst(patronen)]
@@ -127,6 +141,19 @@ class Config(object):
         # Geen [[bron]] mag: een aanroepend programma kan alle stukken zelf aanleveren
         # (extra_stukken). De bouw weigert pas als er dan óók niets aangeleverd is.
         self.bronnen = [BronConfig(b, basis) for b in ruw.get("bron", [])]
+
+    def vingerafdruk(self):
+        """Alles wat bepaalt wat er in de index staat. Verandert dit, dan kan `ververs` niet
+        op de bestaande index voortbouwen en wordt het een volledige bouw."""
+        import hashlib
+        import json
+        from . import versie
+        # De versie hoort erbij: een nieuwe versie kan anders knippen of maskeren.
+        deel = {"versie": versie(), "model": self.model_repo, "dim": self.dim, "stemmer": self.stemmer,
+                "maskeer": self.maskeer_geheimen,
+                "patronen": [p.pattern for p in self.verwijzingspatronen],
+                "bronnen": [sorted(vars(b).items()) for b in self.bronnen]}
+        return hashlib.sha1(json.dumps(deel, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
 def laad(pad):

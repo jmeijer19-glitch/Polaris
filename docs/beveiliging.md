@@ -11,7 +11,9 @@ zijn afgeleid. Daaruit volgen drie dingen:
    waar alleen HR bij kan, is in een gedeelde index voor iedereen met toegang tot die
    index leesbaar.
 3. Iets verwijderen uit een bron haalt het pas uit de index na de volgende
-   `polaris bouw`. Tot dan staat het er nog in.
+   `polaris bouw` of `polaris ververs`. Tot dan staat het er nog in. Wie het snel weg
+   wil hebben, draait `polaris volg`, of laat het programma dat de bronnen beheert na
+   een wijziging `ververs` aanroepen.
 
 Beveiliging begint dus niet bij het zoeken maar bij het **bouwen**: wat er niet in
 gaat, kan ook niet uitlekken.

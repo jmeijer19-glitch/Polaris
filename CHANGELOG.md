@@ -5,6 +5,54 @@ Alle betekenisvolle wijzigingen per versie, nieuwste bovenaan. Versienummers vol
 getal betekent nieuwe functionaliteit, van het laatste getal een reparatie. Staat er
 **index opnieuw bouwen** bij een versie, draai dan na het bijwerken `polaris bouw`.
 
+## 0.4.0 — 2026-09-28 — **index opnieuw bouwen** (of `polaris ververs`, dat doet het vanzelf)
+
+Aanleiding: in een kennisbank van ~1.100 stukken gaf een vraag een verkeerd antwoord
+terwijl het goede antwoord wél in de index stond. Een document had een samenvatting
+("persoon A blijft bij klant X") en verderop een tabel ("klant X → persoon B"); de vraag
+raakte alleen de samenvatting. En een stuk dat de klant terloops noemde, stond met de hele
+vraag op plek 12, met alleen de klantnaam op plek 1.
+
+**Aanvullen per document**
+- Is een document raak, dan komen tot `aanvullen` (standaard 2) andere stukken van dat
+  document mee die de namen of woorden uit de vraag bevatten: veld `ook_in_dit_document`
+  bij de hoogste treffer, in documentvolgorde. Een samenvatting en een tabel die haar
+  tegenspreekt, staan zo naast elkaar. Rangorde en MRR veranderen er niet door.
+- Elke treffer heeft nu `volgnr`, de plek in het document. Aangeleverde stukken met
+  dezelfde bron en hetzelfde pad vormen één document, in de volgorde van aanleveren.
+
+**Namen wegen mee**
+- Eigennamen en afkortingen uit de vraag krijgen elk een eigen woordlijst in de fusie
+  (`namen_gewicht`, standaard 0,7), plus bij twee of meer namen een lijst met de stukken
+  die ze allemaal noemen. Een vraag in kleine letters zoekt precies als voorheen.
+- Gemeten op een kennisbank van 4.414 stukken, 20 vragen: MRR 0,67 → 0,71, geen vraag
+  gezakt. Gewicht 1,5 gaf 0,61 en een vraag minder; vandaar 0,7.
+
+**Verversen in plaats van herbouwen**
+- **`polaris ververs`** / `index.ververs(cfg, extra_stukken=...)`: alleen nieuwe,
+  gewijzigde en verdwenen stukken, in één transactie. Markdown per bestand (wijzigingstijd
+  en grootte), JSON-lijsten per item, aangeleverde stukken per stuk. Het resultaat is
+  gelijk aan een volledige bouw (getest, ook bij ontdubbelde tekst). Kan het niet (geen
+  index, oudere structuur, andere config of Polaris-versie), dan wordt het vanzelf een
+  volledige bouw.
+- Gemeten op 4.414 stukken: volledige bouw 3,1 s, verversen zonder wijzigingen 0,6 s, met
+  één gewijzigd stuk 1,6 s (waarvan ~0,9 s model laden).
+- **`polaris volg`**: blijft draaien en ververst als een wijziging aan de bronbestanden
+  20 s stil is (`--rust`, `--interval`).
+
+**Meetlat**
+- `verwacht_alle` in de evaluatieset: staan álle genoemde stukken (pad, titel of sectie) in
+  de uitkomst, inclusief `ook_in_dit_document`? Het rapport toont "compleet: x/y".
+- `k` per vraag.
+- Het geval hierboven zit met verzonnen namen in de demo (`verlof-karin-najaar.md`,
+  `storing-kassasysteem.md`) en in de tests.
+- Demo-evaluatie: 7/7, MRR 1,000, compleet 1/1. Zonder aanvullen: compleet 0/1.
+
+**Overig**
+- Indexschema 4: kolommen `volgnr`, `bestand`, `inhoud` en `ruw` in de stuktabel, tabel
+  `bronbestand`, en de config-vingerafdruk in `meta`.
+- 57 tests (was 44).
+
 ## 0.3.1 — 2026-09-26
 
 - Een config zonder `[[bron]]` is toegestaan: een aanroepend programma dat álle stukken

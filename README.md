@@ -47,14 +47,19 @@ onderbouwing van elke keuze.
         │
         └──────────────► vectorindex (e5-embeddings, lokaal, CPU)
                                  │
- vraag ──► woordlijst ──┐        │
-       └─► betekenislijst ┴──► RRF-fusie ──► herrangschikking ──► top-k
-                                              (afgerond ×0,5, nieuwste iets omhoog)
+ vraag ──► woordlijst ──────┐    │
+       ├─► betekenislijst ──┼──► RRF-fusie ──► herrangschikking ──► top-k ──► aanvullen
+       └─► lijst per naam ──┘                  (afgerond ×0,5,             (andere stukken
+                                                nieuwste iets omhoog)       van een raak
+                                                                            document)
 ```
 
 Alles zit in één SQLite-bestand. Bij elke bouw wordt een nieuw bestand gemaakt en pas
 aan het eind atomisch omgewisseld, zodat er nooit een halve index actief is. Een
 embedding-cache zorgt dat een herbouw alleen gewijzigde stukken opnieuw berekent.
+`polaris ververs` gaat verder: het leest alleen gewijzigde bestanden opnieuw en werkt de
+index in één transactie bij, zodat een wijziging binnen een à twee seconden doorzoekbaar
+is.
 
 ## Snel proberen
 
@@ -67,6 +72,18 @@ python -m polaris.cli zoek --config voorbeelden/demo/polaris.toml "access point 
 De demo laat ook de beveiliging zien: een wachtwoord in `netwerk-basis.md` wordt
 gemaskeerd, `salarisoverzicht.md` wordt overgeslagen via een opt-out, en een taak met
 `vertrouwelijk: true` komt niet in de index.
+
+En hij laat zien wat een document met een tegenspraak oplevert. In
+`verlof-karin-najaar.md` zegt de samenvatting dat Ruben Bakkerij Vermeulen houdt, en een
+tabel verderop zegt Yusuf:
+
+```bash
+python -m polaris.cli zoek --config voorbeelden/demo/polaris.toml -k 1 \
+    "wie is de waarnemer voor Bakkerij Vermeulen tijdens het verlof van Karin"
+```
+
+De treffer is de tabel, en onder "ook in dit document" staat de samenvatting. Wie de
+treffers leest (een mens of een assistent) ziet zo beide en kan de tegenspraak noemen.
 
 ## Installeren
 
@@ -127,6 +144,23 @@ Zoekgedrag in `[algemeen]`:
 | `stemmer` | `"grof"` | `"nl"` = Nederlandse Snowball-stemmer (`pip install snowballstemmer`, index herbouwen), `"uit"` = alleen exacte woorden |
 | `snippets`, `snippet_markering` | uit, `["[", "]"]` | per treffer een fragment rond de gevonden woorden |
 | `threads` | 0 = alle kernen | CPU-threads voor het model |
+| `namen_gewicht` | 0,7 | gewicht van de extra woordlijst per eigennaam uit de vraag; 0 = uit |
+| `aanvullen` | 2 | hoeveel andere stukken een raak document hoogstens meelevert; 0 = uit |
+
+**Namen.** Een eigennaam of afkorting in de vraag (een woord met een hoofdletter dat niet
+vooraan een zin staat, of een woord in hoofdletters) krijgt een eigen woordzoektocht in de
+fusie, en noemt de vraag er meer, dan krijgen de stukken met álle namen er nog een lijst
+bij. Zonder dit kan een stuk dat de klant uit de vraag terloops noemt, wegzakken achter
+stukken die alleen over hetzelfde onderwerp gaan. Een vraag in kleine letters heeft geen
+namen; dan verandert er niets.
+
+**Aanvullen.** Lange documenten worden in stukken geknipt. Is een document raak, dan
+komen de andere stukken ervan die de namen (of, zonder namen, de woorden) uit de vraag
+bevatten mee in het veld `ook_in_dit_document`, in documentvolgorde. Een samenvatting en
+een tabel verderop die elkaar tegenspreken, staan zo naast elkaar in plaats van dat er
+één wordt gekozen. Staat er een `description` in de frontmatter, dan staat die vóór elk
+stuk; noemt die een naam uit de vraag, dan telt elk stuk van dat document als raak en
+bepaalt BM25 welke er meekomen.
 
 ## Beveiliging
 
@@ -154,9 +188,11 @@ afvangt.
 | Opdracht | Wat het doet |
 |---|---|
 | `polaris bouw --config polaris.toml` | Index (her)bouwen |
+| `polaris ververs --config polaris.toml` | Alleen bijwerken wat veranderd is; wordt vanzelf een volledige bouw als dat nodig is |
+| `polaris volg --config polaris.toml` | Blijven draaien en verversen zodra een wijziging 20 s stil is (`--rust`, `--interval`) |
 | `polaris zoek --config polaris.toml "vraag"` | Zoeken; `-k 5` voor minder resultaten, `--bron taken` voor één bron, `--json` voor machine-uitvoer |
 | `polaris info --config polaris.toml` | Model, bouwmoment, aantal stukken per bron, versie en schema van de index |
-| `polaris eval --config polaris.toml vragen.json` | Meetlat: staat het verwachte resultaat in de top-k? Geeft plek per vraag en MRR; `-k`, `--json` |
+| `polaris eval --config polaris.toml vragen.json` | Meetlat: staat het verwachte resultaat in de top-k, en komen alle verwachte stukken mee? Geeft plek per vraag, MRR en compleetheid; `-k`, `--json` |
 | `polaris model --config polaris.toml` | Model vooraf ophalen (voor offline gebruik) |
 | `polaris versie` | Versienummer van Polaris |
 | `polaris bijwerken` | Nieuwste versie ophalen via git |
@@ -169,8 +205,10 @@ Zonder `pip install -e .` gebruik je `python -m polaris.cli` in plaats van `pola
 polaris zoek --config polaris.toml --json -k 5 "vraag"
 ```
 
-geeft een JSON-lijst met per treffer `bron`, `pad`, `titel`, `sectie`, `datum`,
-`status`, `tekst`, `verwijzingen` en `score`. Elke CLI-aanroep laadt wel het model
+geeft een JSON-lijst met per treffer `id`, `bron`, `pad`, `titel`, `sectie`, `datum`,
+`status`, `tekst`, `verwijzingen`, `volgnr` (plek in het document) en `score`, en waar
+van toepassing `ook_in_dit_document`: een lijst met `id`, `sectie`, `volgnr` en `tekst`
+van de andere stukken van dat document die erbij horen. Elke CLI-aanroep laadt wel het model
 opnieuw (1-3 s). In een langlopend proces gebruik je daarom de `Zoeker`, die model en
 vectormatrix warm houdt:
 
@@ -198,6 +236,16 @@ extra = [{"bron": "git", "pad": "commit 1a2b3c", "titel": "Firewall aangescherpt
 index.bouw(cfg, extra_stukken=extra)
 ```
 
+Stukken met dezelfde `bron` en hetzelfde `pad` vormen samen één document; hun volgorde
+in de lijst is de documentvolgorde (of geef zelf `volgnr` mee).
+
+**Na een wijziging bijwerken.** Wanneer er gebouwd moet worden, weet je programma zelf het
+best. Roep dan `index.ververs(cfg, extra_stukken=extra)` aan met de volledige, actuele
+lijst: Polaris vergelijkt per stuk en schrijft alleen wat nieuw, gewijzigd of verdwenen
+is. Het resultaat is precies dezelfde index als een volledige bouw. Kan verversen niet
+(nog geen index, een oudere indexstructuur, een andere config of Polaris-versie), dan
+wordt het vanzelf een volledige bouw; de teruggegeven dict zegt dat met `volledig`.
+
 Voor tests of een andere embedder: `bouw(cfg, embedder=...)` en `Zoeker(cfg, embedder=...)`
 accepteren elk object met `passages(teksten)` en `query(tekst)` die genormaliseerde
 vectoren teruggeven. De tests gebruiken zo een nep-embedder zonder model.
@@ -215,17 +263,24 @@ cijfers dat zeggen. Maak daarom een lijst vragen met wat er in de top-k moet sta
 ```json
 [
   {"vraag": "access point krijgt geen stroom", "verwacht": "taken\\.json#TK-1"},
-  {"vraag": "hoe zet ik een back-up terug",   "verwacht": "back-up-procedure", "bron": "documenten"}
+  {"vraag": "hoe zet ik een back-up terug",   "verwacht": "back-up-procedure", "bron": "documenten"},
+  {"vraag": "wie is de waarnemer voor Bakkerij Vermeulen", "verwacht": "verlof-karin", "k": 1,
+   "verwacht_alle": ["^Samenvatting$", "^Waarneming per klant$"]}
 ]
 ```
 
-`verwacht` is een reguliere expressie op het pad of de titel van een treffer. Dan:
+`verwacht` is een reguliere expressie op het pad of de titel van een treffer; `k` per
+vraag overschrijft de k van de run. `verwacht_alle` is een tweede controle: elke
+expressie moet passen op het pad, de titel of de sectie van een treffer of van een stuk
+in `ook_in_dit_document`. Zo meet je of een raak document al zijn relevante stukken
+levert. Dan:
 
 ```
 polaris eval --config polaris.toml vragen.json
  1  access point krijgt geen stroom
  2  hoe zet ik een back-up terug
-gevonden in top-8: 2/2   MRR 0.750   (0.3 s)
+ 1  wie is de waarnemer voor Bakkerij Vermeulen
+gevonden: 3/3   MRR 0.833   compleet: 1/1   (top-8, 0.3 s)
 ```
 
 MRR is het gemiddelde van 1/plek (0 als niet gevonden): 1,0 betekent alles bovenaan.
@@ -256,13 +311,16 @@ bijwerkt met `polaris bijwerken` (een `git pull --tags`). Elke release heeft een
 
 Na een update: `pip install -r requirements.txt` als er afhankelijkheden bij zijn
 gekomen, en `polaris bouw` als de CHANGELOG zegt dat de indexstructuur is veranderd.
+Gebruik je `polaris ververs`, dan gebeurt dat laatste vanzelf: de eerste ververs na een
+nieuwe versie is een volledige bouw.
 
 ## Richting voor volgende versies
 
 - **Warme zoekservice.** De `Zoeker` houdt sinds 0.2.0 model en matrix warm binnen één
   proces; wat ontbreekt is een klein, altijd-aan proces met een netwerk-endpoint, zodat
   ook de CLI en andere machines daarvan profiteren (zoekactie ~0,1 s). Zo'n service
-  moet authenticatie krijgen; zie `docs/beveiliging.md`.
+  moet authenticatie krijgen; zie `docs/beveiliging.md`. `polaris volg` zou er de
+  bijwerk-kant van kunnen worden.
 - **Database als brontype.** Rechtstreeks uit een database lezen in plaats van uit een
   export, met een expliciete lijst van tabellen en kolommen die mogen — nooit "alles".
 - **Leerlus.** Zoekopdrachten zonder goede treffer loggen en periodiek gericht
@@ -286,6 +344,7 @@ winst, en het laatste haalt een LLM in een pijplijn die daar juist vrij van is.
 | `polaris/eval.py` | Evaluatieset draaien, MRR |
 | `polaris/cli.py` | Opdrachtregel |
 | `polaris/update.py` | Bijwerken via git |
+| `polaris/volg.py` | Volg-modus: verversen bij elke wijziging |
 | `tests/` | Tests zonder model of netwerk |
 | `voorbeelden/polaris.toml` | Configuratiesjabloon met alle opties |
 | `voorbeelden/demo/` | Kleine kennisbank om mee te proberen, met `eval.json` |

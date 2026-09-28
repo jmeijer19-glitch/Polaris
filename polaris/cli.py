@@ -2,6 +2,8 @@
 """Opdrachtregel voor Polaris.
 
     polaris bouw      --config polaris.toml         index (her)bouwen
+    polaris ververs   --config polaris.toml         alleen bijwerken wat veranderd is
+    polaris volg      --config polaris.toml         blijven verversen bij elke wijziging
     polaris zoek      --config polaris.toml "vraag"  hybride zoekopdracht (-k, --bron, --json)
     polaris info      --config polaris.toml         wat zit er in de index
     polaris eval      --config polaris.toml vragen.json   meetlat: staat het verwachte in de top-k?
@@ -19,6 +21,7 @@ from . import config as configmod
 from . import eval as evalmod
 from . import index as indexmod
 from . import update as updatemod
+from . import volg as volgmod
 from . import versie as versie_fn
 
 
@@ -41,6 +44,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     for naam, uitleg in (("bouw", "(her)bouw de index"),
+                         ("ververs", "werk alleen bij wat veranderd is (snel)"),
                          ("info", "toon wat er in de index zit"),
                          ("model", "haal het embeddingmodel vooraf op")):
         sp = sub.add_parser(naam, help=uitleg)
@@ -53,6 +57,14 @@ def main(argv=None):
                         help="resultaten als JSON, voor gebruik door een ander programma")
     p_zoek.add_argument("--bron", default=None, help="alleen in deze bron zoeken")
     p_zoek.add_argument("vraag", nargs="+")
+
+    p_volg = sub.add_parser("volg", help="blijf de bronnen volgen en ververs bij elke wijziging")
+    p_volg.add_argument("--config", default="polaris.toml")
+    p_volg.add_argument("--interval", type=float, default=5.0,
+                        help="elke hoeveel seconden kijken (standaard 5)")
+    p_volg.add_argument("--rust", type=float, default=20.0,
+                        help="zoveel seconden stil na een wijziging voor er ververst wordt "
+                             "(standaard 20)")
 
     p_eval = sub.add_parser("eval", help="evaluatieset draaien: vragen met verwacht resultaat")
     p_eval.add_argument("--config", default="polaris.toml")
@@ -80,6 +92,19 @@ def main(argv=None):
         except indexmod.BouwBezig as e:
             print(str(e))
             sys.exit(2)
+
+    elif args.cmd == "ververs":
+        try:
+            indexmod.ververs(cfg)
+        except indexmod.BouwBezig as e:
+            print(str(e))
+            sys.exit(2)
+
+    elif args.cmd == "volg":
+        try:
+            volgmod.volg(cfg, interval=args.interval, rust=args.rust)
+        except KeyboardInterrupt:
+            print()
 
     elif args.cmd == "model":
         emb = indexmod.Embedder(cfg)
@@ -129,6 +154,10 @@ def main(argv=None):
         for i, r in enumerate(resultaten, 1):
             print("%d. [%s] %s › %s" % (i, r["bron"], r["titel"], r["sectie"]))
             print("   %s" % (r.get("fragment") or r["tekst"][:220].replace("\n", " ")))
+            for extra in r.get("ook_in_dit_document", []):
+                print("   ook in dit document › %s: %s"
+                      % (extra["sectie"], (extra.get("fragment") or extra["tekst"])[:160]
+                         .replace("\n", " ")))
             if r.get("verwijzingen"):
                 print("   live-referentie(s): %s - overweeg dit vers op te halen "
                       "in plaats van de index te vertrouwen" % r["verwijzingen"])

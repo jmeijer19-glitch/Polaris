@@ -374,6 +374,239 @@ class TestBouwEnZoek(unittest.TestCase):
         self.assertNotEqual(self.zoeker._stand, stand)
 
 
+class TestNamen(unittest.TestCase):
+    def test_eigennamen_en_afkortingen(self):
+        self.assertEqual(index.namen("wie neemt Bakkerij Vermeulen over tijdens de afwezigheid van Karin"),
+                         [["bakkerij", "vermeulen"], ["karin"]])
+        self.assertEqual(index.namen("Wat doet de NAS eigenlijk?"), [["nas"]])
+        self.assertEqual(index.namen("Status van TK-1"), [["tk", "1"]])
+
+    def test_zinsbegin_vraagwoord_en_samenstelling(self):
+        self.assertEqual(index.namen("Wanneer loopt het Vattenfall-contract af?"), [["vattenfall"]])
+        self.assertEqual(index.namen("access point krijgt geen stroom"), [])
+        self.assertEqual(index.namen("Karin is weg. Wie neemt het over?"), [])
+
+
+def _stukken_verlof():
+    """Het geval uit de praktijk, met verzonnen namen: een samenvatting die Ruben bij
+    Bakkerij Vermeulen noemt, een tabel verderop die Yusuf noemt, een stuk zonder namen, en
+    een ander document dat de klant terloops noemt."""
+    vulsel = " Dit is gewone tekst om het stuk op lengte te brengen." * 3
+    return [
+        {"bron": "docs", "pad": "verlof.md", "titel": "Verlof Karin", "sectie": "Samenvatting",
+         "tekst": "Ruben blijft het aanspreekpunt voor Bakkerij Vermeulen tijdens het verlof." + vulsel},
+        {"bron": "docs", "pad": "verlof.md", "titel": "Verlof Karin", "sectie": "Aandachtspunten",
+         "tekst": "Projecten lopen door en contracten schuiven op tot na het verlof." + vulsel},
+        {"bron": "docs", "pad": "verlof.md", "titel": "Verlof Karin", "sectie": "Waarneming per klant",
+         "tekst": "| Bakkerij Vermeulen | 5 oktober | Yusuf |\n| De Wit | 5 oktober | Ruben |" + vulsel},
+        {"bron": "docs", "pad": "kassa.md", "titel": "Storing kassa", "sectie": "Wat er gebeurde",
+         "tekst": "De kassa bleef hangen; gemeld door Bakkerij Vermeulen om half acht." + vulsel},
+    ]
+
+
+class TestNamenEnAanvullen(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.emb = NepEmbedder()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _zoeker(self, extra, algemeen=""):
+        cfg = _config(self.tmp.name, extra_algemeen=algemeen, bronnen="")
+        index.bouw(cfg, verbose=False, embedder=self.emb, extra_stukken=extra)
+        return index.Zoeker(cfg, embedder=self.emb)
+
+    def test_naam_tilt_stuk_dat_de_klant_terloops_noemt(self):
+        # Veel stukken die "over hetzelfde onderwerp" gaan zonder de klant te noemen: het
+        # betekenisdeel zet die bovenaan. De naamlijst haalt het stuk met de klant omhoog.
+        vulsel = " Over afwezigheid, vervanging en overdracht van het werk." * 3
+        extra = [{"bron": "docs", "pad": "algemeen-%d.md" % i, "titel": "Afwezigheid en vervanging %d" % i,
+                  "tekst": "Wie neemt het werk over tijdens de afwezigheid van een collega?" + vulsel}
+                 for i in range(12)]
+        extra.append({"bron": "docs", "pad": "kassa.md", "titel": "Storing kassa",
+                      "tekst": "De kassa bleef hangen; gemeld door Bakkerij Vermeulen om half acht."})
+        vraag = "wie neemt Bakkerij Vermeulen over tijdens de afwezigheid van Karin"
+
+        def plek(algemeen):
+            r = self._zoeker(extra, algemeen).zoek(vraag, k=20)
+            return [x["pad"] for x in r].index("kassa.md") + 1
+        zonder, met = plek("namen_gewicht = 0\n"), plek("")
+        self.assertLess(met, zonder)
+        self.assertLessEqual(met, 3)
+
+    def test_raak_document_levert_zijn_andere_stukken(self):
+        z = self._zoeker(_stukken_verlof())
+        r = z.zoek("wie is de waarnemer voor Bakkerij Vermeulen tijdens het verlof van Karin", k=1)
+        self.assertEqual(r[0]["pad"], "verlof.md")
+        getoond = {r[0]["sectie"]} | {x["sectie"] for x in r[0].get("ook_in_dit_document", [])}
+        self.assertTrue({"Samenvatting", "Waarneming per klant"} <= getoond)
+        self.assertNotIn("Aandachtspunten", getoond)        # noemt de namen niet
+        volgorde = [x["volgnr"] for x in r[0].get("ook_in_dit_document", [])]
+        self.assertEqual(volgorde, sorted(volgorde))
+        for intern in ("inhoud", "bestand", "ruw"):
+            self.assertNotIn(intern, r[0])
+
+    def test_aanvullen_uit_en_grens(self):
+        z = self._zoeker(_stukken_verlof(), "aanvullen = 0\n")
+        r = z.zoek("wie is de waarnemer voor Bakkerij Vermeulen tijdens het verlof van Karin", k=1)
+        self.assertNotIn("ook_in_dit_document", r[0])
+        z = self._zoeker(_stukken_verlof(), "aanvullen = 1\n")
+        r = z.zoek("wat doen Ruben en Yusuf voor Bakkerij Vermeulen", k=1)
+        self.assertEqual(len(r[0].get("ook_in_dit_document", [])), 1)
+        with self.assertRaises(ValueError):
+            _config(self.tmp.name, extra_algemeen="aanvullen = -1\n")
+
+    def test_eval_compleet(self):
+        z = self._zoeker(_stukken_verlof())
+        vragen = [{"vraag": "wie is de waarnemer voor Bakkerij Vermeulen tijdens het verlof van Karin",
+                   "verwacht": "verlof", "k": 1,
+                   "verwacht_alle": ["^Samenvatting$", "^Waarneming per klant$"]}]
+        uit = evalmod.evalueer(z.config, vragen, zoeker=z)
+        self.assertEqual((uit["compleet"], uit["compleet_van"]), (1, 1))
+        self.assertEqual(uit["per_vraag"][0]["k"], 1)
+        z.config.aanvullen = 0
+        uit = evalmod.evalueer(z.config, vragen, zoeker=z)
+        self.assertEqual(uit["compleet"], 0)
+        self.assertIn("niet compleet", evalmod.rapport(uit))
+
+
+class Teller(NepEmbedder):
+    """Telt hoeveel teksten er werkelijk geëmbed worden."""
+
+    def __init__(self):
+        self.teksten = 0
+
+    def passages(self, teksten):
+        self.teksten += len(teksten)
+        return NepEmbedder.passages(self, teksten)
+
+
+class TestVervers(unittest.TestCase):
+    """`ververs` moet precies dezelfde index opleveren als een volledige bouw."""
+
+    BRONNEN = ('[[bron]]\nnaam = "docs"\npad = "docs"\n'
+               '[[bron]]\nnaam = "taken"\ntype = "json_lijst"\npad = "taken.json"\n'
+               'lijst_veld = "items"\ntekst_veld = "omschrijving"\n')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        for i in range(5):
+            _schrijf(d, "docs/doc%d.md" % i, "## Deel\nDocument %d over onderwerp %d. " % (i, i) * 30)
+        self._taken([("TK-1", "Printer", "Toner bestellen"), ("TK-2", "Switch", "PoE-budget te klein")])
+        self.cfg = _config(d, bronnen=self.BRONNEN)
+        index.bouw(self.cfg, verbose=False, embedder=NepEmbedder())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _taken(self, items):
+        with open(os.path.join(self.tmp.name, "taken.json"), "w", encoding="utf-8") as f:
+            json.dump({"items": [{"id": i, "titel": t, "omschrijving": o} for i, t, o in items]}, f)
+
+    def _inhoud(self, db):
+        import sqlite3
+        con = sqlite3.connect(db)
+        try:
+            stukken = sorted(con.execute("SELECT id, inhoud FROM stuk").fetchall())
+            vectoren = sorted(con.execute("SELECT id, vec FROM vector").fetchall())
+            fts = sorted(con.execute("SELECT id, titel, sectie, tekst FROM stuk_fts").fetchall())
+            return stukken, vectoren, fts
+        finally:
+            con.close()
+
+    def _vergelijk_met_volledige_bouw(self, extra=None):
+        schoon = _config(self.tmp.name, bronnen=self.BRONNEN)
+        schoon.db_pad = os.path.join(self.tmp.name, "schoon.db")
+        index.bouw(schoon, verbose=False, embedder=NepEmbedder(), extra_stukken=extra)
+        self.assertEqual(self._inhoud(self.cfg.db_pad), self._inhoud(schoon.db_pad))
+
+    def test_niets_veranderd(self):
+        t = Teller()
+        uit = index.ververs(self.cfg, verbose=False, embedder=t)
+        self.assertEqual((uit["nieuw_of_gewijzigd"], uit["weg"], uit["gelezen"]), (0, 0, 0))
+        self.assertEqual(uit["overgeslagen"], 5)
+        self.assertEqual(t.teksten, 0)
+
+    def test_nieuw_gewijzigd_verdwenen_en_record(self):
+        d = self.tmp.name
+        _schrijf(d, "docs/doc1.md", "## Deel\nHelemaal nieuwe inhoud over de koffiemachine. " * 30)
+        _schrijf(d, "docs/nieuw.md", "## Deel\nEen nieuw document over de printer. " * 30)
+        os.remove(os.path.join(d, "docs/doc4.md"))
+        self._taken([("TK-1", "Printer", "Toner bestellen"), ("TK-2", "Switch", "Nieuwe switch besteld"),
+                     ("TK-3", "Wifi", "Extra access point")])
+        t = Teller()
+        uit = index.ververs(self.cfg, verbose=False, embedder=t)
+        self.assertFalse(uit["volledig"])
+        self.assertEqual(uit["gelezen"], 2)                  # doc1 en nieuw; de rest overgeslagen
+        self.assertEqual(uit["overgeslagen"], 3)
+        # doc1, nieuw, TK-2, TK-3 en het overzichtsstuk (bevat alle namen) zijn nieuw of anders
+        self.assertEqual(uit["nieuw_of_gewijzigd"], 5)
+        self.assertLessEqual(t.teksten, 5)
+        self._vergelijk_met_volledige_bouw()
+        r = index.Zoeker(self.cfg, embedder=NepEmbedder()).zoek("koffiemachine", k=1)
+        self.assertEqual(r[0]["pad"], "doc1.md")
+        self.assertEqual(index.Zoeker(self.cfg, embedder=NepEmbedder()).zoek('"onderwerp 4"'), [])
+
+    def test_aangeleverde_stukken_per_stuk(self):
+        extra = [{"bron": "git", "pad": "commit %d" % i, "tekst": "Commit %d over de firewall." % i}
+                 for i in range(4)]
+        index.ververs(self.cfg, verbose=False, embedder=NepEmbedder(), extra_stukken=extra)
+        extra[2]["tekst"] = "Commit 2 gaat nu over de printer."
+        del extra[3]
+        t = Teller()
+        uit = index.ververs(self.cfg, verbose=False, embedder=t, extra_stukken=extra)
+        self.assertEqual((uit["nieuw_of_gewijzigd"], uit["weg"], t.teksten), (1, 1, 1))
+        self._vergelijk_met_volledige_bouw(extra)
+
+    def test_warme_zoeker_ziet_de_ververs(self):
+        z = index.Zoeker(self.cfg, embedder=NepEmbedder())
+        z.zoek("document")
+        _schrijf(self.tmp.name, "docs/nieuw.md", "## Deel\nDe vaatwasser lekt aan de onderkant. " * 20)
+        index.ververs(self.cfg, verbose=False, embedder=NepEmbedder())
+        self.assertEqual(z.zoek("vaatwasser lekt", k=1)[0]["pad"], "nieuw.md")
+
+    def test_volledige_bouw_bij_oude_index_of_andere_config(self):
+        import sqlite3
+        con = sqlite3.connect(self.cfg.db_pad)
+        con.execute("UPDATE meta SET waarde='3' WHERE sleutel='schema'")
+        con.commit(); con.close()
+        uit = index.ververs(self.cfg, verbose=False, embedder=NepEmbedder())
+        self.assertTrue(uit["volledig"])
+        self.assertIn("oudere", uit["reden"])
+        anders = _config(self.tmp.name, extra_algemeen="maskeer_geheimen = false\n", bronnen=self.BRONNEN)
+        self.assertTrue(index.ververs(anders, verbose=False, embedder=NepEmbedder())["volledig"])
+        self.assertFalse(index.ververs(anders, verbose=False, embedder=NepEmbedder())["volledig"])
+
+    def test_dubbele_tekst_blijft_gelijk_aan_volledige_bouw(self):
+        # doc0 en kopie hebben dezelfde tekst: één gaat eruit. Verandert doc0, dan hoort de
+        # kopie terug te komen, net als bij een volledige bouw.
+        d = self.tmp.name
+        with open(os.path.join(d, "docs/doc0.md"), encoding="utf-8") as f:
+            tekst = f.read()
+        _schrijf(d, "docs/kopie.md", tekst)
+        index.ververs(self.cfg, verbose=False, embedder=NepEmbedder())
+        self._vergelijk_met_volledige_bouw()
+        _schrijf(d, "docs/doc0.md", "## Deel\nAndere tekst over de lift. " * 30)
+        index.ververs(self.cfg, verbose=False, embedder=NepEmbedder())
+        self._vergelijk_met_volledige_bouw()
+
+    def test_volg_ververst_na_een_wijziging(self):
+        import threading
+        from polaris import volg
+
+        def wijzig():
+            import time
+            time.sleep(0.3)
+            _schrijf(self.tmp.name, "docs/nieuw.md", "## Deel\nDe verwarming tikt 's nachts. " * 20)
+        threading.Thread(target=wijzig).start()
+        volg.volg(self.cfg, interval=0.05, rust=0.2, embedder=NepEmbedder(), eenmalig=True,
+                  verbose=False)
+        r = index.Zoeker(self.cfg, embedder=NepEmbedder()).zoek("verwarming tikt", k=1)
+        self.assertEqual(r[0]["pad"], "nieuw.md")
+
+
 class TestConfig(unittest.TestCase):
     def test_paden_relatief_aan_configbestand(self):
         with tempfile.TemporaryDirectory() as d:
@@ -388,6 +621,8 @@ class TestConfig(unittest.TestCase):
             self.assertEqual(c.threads, 0)
             self.assertEqual(c.stemmer, "grof")
             self.assertFalse(c.snippets)
+            self.assertEqual(c.namen_gewicht, 0.7)
+            self.assertEqual(c.aanvullen, 2)
 
     def test_ongeldige_stemmer_is_fout(self):
         with tempfile.TemporaryDirectory() as d:
