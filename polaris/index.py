@@ -71,6 +71,7 @@ LOCK_VEROUDERD_S = 3600
 _KOPREGEX = re.compile(r"^(#{2,4})\s+(.*)$")
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*(\n|\Z)", re.S)
 _FTS_SYNTAX = re.compile(r'[*"^:()]|\b(AND|OR|NOT|NEAR)\b')
+_ZONDER_SYNTAX = re.compile(r'[*"^:()]|\b(?:AND|OR|NOT|NEAR)\b')
 
 
 class BouwBezig(Exception):
@@ -1102,9 +1103,11 @@ class Zoeker(object):
                         .reshape(len(rijen), self.config.dim) if rijen else None)
         self._stand = stand
 
-    def _fts(self, con, query, bron=None, limiet=KANDIDATEN, extra_sql="", extra_params=()):
+    def _fts(self, con, query, bron=None, limiet=KANDIDATEN, extra_sql="", extra_params=(),
+             streng=False):
         """Eén FTS5-zoekopdracht, gerangschikt op BM25. Geeft rijen met `id` en, als de
-        config erom vraagt, `fragment`. Ongeldige syntax geeft een lege lijst."""
+        config erom vraagt, `fragment`. Ongeldige syntax geeft een lege lijst, of met
+        `streng` de OperationalError."""
         rangorde = "bm25(stuk_fts, %s)" % ", ".join(str(g) for g in BM25_GEWICHTEN)
         kolommen, params_voor = "id", ()
         if self.config.snippets:
@@ -1121,9 +1124,11 @@ class Zoeker(object):
                 % (kolommen, filter_sql, extra_sql, rangorde, limiet),
                 params_voor + (query,) + params_na + tuple(extra_params)).fetchall()
         except sqlite3.OperationalError:
+            if streng:
+                raise
             return []
 
-    def _woordlijst(self, con, vraag, bron, snippets):
+    def _woordlijst(self, con, vraag, bron, snippets, streng=False):
         """{id: (gewicht, rang)}: exact eerst, dan aangevuld met stammen."""
         uit = {}
         pogingen = ([(vraag, 1.0)] if is_fts_syntax(vraag)
@@ -1131,7 +1136,7 @@ class Zoeker(object):
         for query, gewicht in pogingen:
             if len(uit) >= KANDIDATEN:
                 break
-            for r in self._fts(con, query, bron):
+            for r in self._fts(con, query, bron, streng=streng):
                 if r["id"] not in uit:
                     uit[r["id"]] = (gewicht, len(uit) + 1)
                     if self.config.snippets:
@@ -1215,7 +1220,14 @@ class Zoeker(object):
         con.row_factory = sqlite3.Row
         try:
             snippets = {}
-            woord = self._woordlijst(con, vraag, bron, snippets)
+            try:
+                woord = self._woordlijst(con, vraag, bron, snippets, streng=is_fts_syntax(vraag))
+            except sqlite3.OperationalError:
+                # Ongeldige eigen syntax is bijna altijd een gewone vraag met een haakje of
+                # dubbele punt erin ("hoe doe ik dit (snel)?"). Geen lege lijst, maar zoeken
+                # op de woorden. Geldige syntax zonder treffer blijft leeg: dat is een antwoord.
+                vraag = _ZONDER_SYNTAX.sub(" ", vraag)
+                woord = self._woordlijst(con, vraag, bron, snippets)
             vrij = not is_fts_syntax(vraag)
             betekenis = self._betekenislijst(con, vraag, bron) if vrij else {}
             namenlijst = namen(vraag) if vrij else []

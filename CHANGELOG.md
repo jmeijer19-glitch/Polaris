@@ -5,6 +5,20 @@ Alle betekenisvolle wijzigingen per versie, nieuwste bovenaan. Versienummers vol
 getal betekent nieuwe functionaliteit, van het laatste getal een reparatie. Staat er
 **index opnieuw bouwen** bij een versie, draai dan na het bijwerken `polaris bouw`.
 
+## 0.5.1 — 2026-10-01
+
+Reparatie. Een vraag met een haakje, dubbele punt, aanhalingsteken, `*` of `^` erin
+("hoe doe ik dit (snel)?") werd als eigen FTS5-syntax gezien. Was die ongeldig, dan gaf
+SQLite geen fout maar een lege lijst, en bleef ook de betekenislijst achterwege: de vraag gaf
+nul treffers, terwijl dezelfde vraag zonder haakje er vijf gaf.
+
+- **Ongeldige eigen syntax valt terug op een gewone vraag**: de syntaxtekens (en losse
+  `AND`/`OR`/`NOT`/`NEAR`) gaan eruit en het zoeken verloopt als altijd, mét betekenislijst.
+- Geldige syntax blijft ongewijzigd: `"exacte frase"` zonder treffer geeft nog steeds een
+  lege lijst, want dat is dan het antwoord.
+
+Geen nieuwe indexstructuur, niet opnieuw bouwen.
+
 ## 0.5.0 — 2026-09-28
 
 Aanleiding: een programma zocht naast zijn Polaris-index ook in een documentarchief en

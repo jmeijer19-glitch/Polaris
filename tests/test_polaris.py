@@ -289,6 +289,13 @@ class TestBouwEnZoek(unittest.TestCase):
         self.assertTrue(r)
         self.assertTrue(all("PoE-budget" in x["tekst"] for x in r))
 
+    def test_vraag_met_haakje_of_dubbele_punt_geeft_geen_lege_lijst(self):
+        # Ongeldige FTS5 (`(`, `:`, `?` na een haakje) gaf stil een lege lijst.
+        for vraag in ("PoE-budget (per switch)?", "PoE-budget: per switch", "PoE-budget (snel)"):
+            self.assertTrue(index.is_fts_syntax(vraag) or "?" in vraag)
+            r = self.zoeker.zoek(vraag, k=5)
+            self.assertTrue(r, vraag)
+
     def test_herbouw_gebruikt_cache_en_lock(self):
         class Teller(NepEmbedder):
             aanroepen = 0
